@@ -13,6 +13,9 @@ bin/*.exe
 bin/*.dll
 *.gguf
 
+# Daily dev logs
+docs/
+
 # Unrelated local tooling (separate "pi-dev" agent config — not part of NimAgent)
 .qodo/
 

@@ -130,11 +130,3 @@ All are MIT/Apache/permissively licensed; install the builds for your platform.
                        status bar, input frame, diff preview
   agent/settings.json  (generated on first run)
 ```
-
-## Changelog
-
-Daily development logs live in [`docs/daily/`](docs/daily/).
-
-- [2026-06-26](docs/daily/2026-06-26.md) — animated terminal UI (status states,
-  framed token panel, bottom status bar, input frame); audit fixes (`edit_file`
-  `$`-pattern corruption, streaming token usage, `--resume` flag); dead-code cleanup.
