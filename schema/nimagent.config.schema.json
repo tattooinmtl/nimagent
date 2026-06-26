@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nimagent.local/schema/nimagent.config.schema.json",
+  "title": "NimAgent project config",
+  "description": "Top-level configuration for a NimAgent project (nimagent.config.json).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "promptFile": {
+      "type": "string",
+      "description": "Path (relative to project root) to the system prompt markdown file."
+    },
+    "theme": {
+      "type": "string",
+      "description": "Path to a theme JSON file (see themes/)."
+    },
+    "extensions": {
+      "type": "array",
+      "description": "Extension JS modules to load. Each default-exports { name, tools, impl }.",
+      "items": { "type": "string" }
+    },
+    "skills": {
+      "type": "array",
+      "description": "Skill directories. Each contains a SKILL.md with frontmatter (name, command, description).",
+      "items": { "type": "string" }
+    },
+    "autoDiscoverSkills": {
+      "type": "boolean",
+      "description": "When true, auto-discover skill directories by scanning skills/**/SKILL.md."
+    }
+  }
+}

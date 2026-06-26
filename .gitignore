@@ -1,0 +1,21 @@
+# Secrets + runtime config (your real keys — never commit). The .env.example
+# and settings.example.json templates ARE committed; the real files are not.
+.env
+.env.local
+agent/
+node_modules/
+*.log
+
+# Bundled third-party binaries — large, platform-specific, fetched separately.
+# See README "Binaries" for how to install ripgrep/fd/jq and llama.cpp.
+llama/
+bin/*.exe
+bin/*.dll
+*.gguf
+
+# Unrelated local tooling (separate "pi-dev" agent config — not part of NimAgent)
+.qodo/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

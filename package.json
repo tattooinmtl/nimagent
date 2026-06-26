@@ -1,0 +1,27 @@
+{
+  "name": "nimagent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "NimAgent - a from-scratch terminal coding agent (pi/claude-cli style) for OpenAI-compatible providers",
+  "author": "Erik Boivin <erik.boivin@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/tattooinmtl/nimagent#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tattooinmtl/nimagent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tattooinmtl/nimagent/issues"
+  },
+  "bin": {
+    "NimAgent": "./bin/nimagent.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node ./bin/nimagent.mjs",
+    "test": "node ./test-tools.mjs"
+  }
+}

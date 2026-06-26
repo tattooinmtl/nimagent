@@ -1,0 +1,16 @@
+{
+  "$schema": "./schema/nimagent.config.schema.json",
+  "promptFile": "prompts/default.md",
+  "theme": "themes/forge-yellow.json",
+  "extensions": [
+    "extensions/file-tools.js",
+    "extensions/web-search.js"
+  ],
+  "skills": [
+    "skills/code-review",
+    "skills/project-doctor",
+    "skills/html-game-builder",
+    "skills/vs-project-starter"
+  ],
+  "autoDiscoverSkills": true
+}
