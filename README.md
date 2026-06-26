@@ -131,8 +131,5 @@ All are MIT/Apache/permissively licensed; install the builds for your platform.
   agent/settings.json  (generated on first run)
 ```
 
-## Changelog
-
-Daily development logs live in [`docs/daily/`](docs/daily/).
 
 
