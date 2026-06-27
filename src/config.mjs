@@ -62,6 +62,30 @@ const DEFAULT_SETTINGS = {
     "nvidia/deepseek-v4-pro": { provider: "nvidia", id: "deepseek-ai/deepseek-v4-pro", maxTokens: 16384 },
     "local/coder": { provider: "local", id: "Qwopus3.5-9B-Coder.i1-Q6_K", maxTokens: 8192 },
   },
+  // Intent router — classifies each turn as "coding" or "assistant" using a
+  // warm Python sidecar + local ML (sub-ms, free, no network).
+  // Set enabled:true to activate.  mode:"auto" classifies every turn;
+  // mode:"manual" only changes persona via /route command.
+  router: {
+    enabled: false,
+    mode: "auto",         // "auto" | "manual"
+    default: "coding",
+    python: {
+      interpreter: "python",   // override with venv path: "router/.venv/Scripts/python.exe"
+      confidenceThreshold: 0.60,
+      timeoutMs: 150,
+    },
+  },
+  // NimTools bridge — exposes the full hermes capability set as a single
+  // "nimtools" proxy tool (browser, computer_use, media gen, memory, etc.).
+  // Set enabled:true to activate.  hermesRoot defaults to C:\hermes-agent.
+  bridge: {
+    enabled: false,
+    hermesRoot: "C:\\hermes-agent",
+    python: {
+      interpreter: "python",   // override with hermes venv: "C:\\hermes-agent\\.venv\\Scripts\\python.exe"
+    },
+  },
 };
 
 // Load KEY=VALUE pairs from a .env file into process.env (no dependencies).

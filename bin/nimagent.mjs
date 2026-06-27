@@ -5,9 +5,13 @@ import readline from "node:readline";
 import { loadSettings, saveSettings, resolveModel, Session, SETTINGS_PATH, HOME, providerKeyMissing, providerKeyEnvVar } from "../src/config.mjs";
 import { systemPrompt, runTurn } from "../src/agent.mjs";
 import { registerExtensions } from "../src/tools.mjs";
-import { loadProjectConfig, loadSkills, buildSystemPrompt, INSTALL_ROOT } from "../src/extras.mjs";
-import { banner, c, errorLine, infoLine, warnLine, costLine, shutdown, promptTop, promptBottom, statusBar } from "../src/ui.mjs";
+import { loadProjectConfig, loadSkills, buildSystemPrompt, INSTALL_ROOT, loadMcpConfig } from "../src/extras.mjs";
+import { banner, c, errorLine, infoLine, warnLine, costLine, shutdown, promptTop, promptBottom, statusBar, setPersonaIndicator } from "../src/ui.mjs";
+import { installPackage, uninstallPackage, listInstalled, searchRegistry, DEFAULT_REGISTRY } from "../src/registry.mjs";
+import { registerMcpProxy, disconnectAll, mcpStatus, reconnectServer } from "../src/mcp.mjs";
 import * as llama from "../src/llama.mjs";
+import { classifyIntent, warmSidecar, killSidecar, PERSONAS } from "../src/router.mjs";
+import { registerNimToolsProxy, disconnectBridge, bridgeStatus } from "../src/bridge.mjs";
 
 const settings = await loadSettings();
 const args = process.argv.slice(2);
@@ -17,6 +21,65 @@ const project = loadProjectConfig();
 const loadedExtensions = await registerExtensions(INSTALL_ROOT, project.extensions || []);
 const skills = loadSkills(project);
 const skillByCommand = new Map(skills.map((s) => [s.command, s]));
+
+// MCP: register the single `mcp` proxy tool (+ any cached directTools). No
+// servers connect here — connections are lazy, on first call. See src/mcp.mjs.
+const mcpInfo = registerMcpProxy(loadMcpConfig(project));
+
+// NimTools bridge: register the single `nimtools` proxy tool (gated on bridge.enabled).
+// Warm-starts bridge_server.py so the first real call has no spawn latency.
+const bridgeCfg = settings.bridge || project.bridge || {};
+if (bridgeCfg.enabled) {
+  registerNimToolsProxy(bridgeCfg);
+}
+
+// Intent router: warm-start the Python sidecar so first-turn classification
+// has no latency. Gated on router.enabled.
+const routerCfg = settings.router || project.router || {};
+if (routerCfg.enabled) {
+  warmSidecar(settings);
+}
+
+// Active persona — null means router is off; routing uses PERSONAS directly.
+let activePersona = null;
+let routeMode = routerCfg.mode || "auto"; // "auto" | "manual"
+let routePinned = false; // true when user manually pinned via /route
+
+// Package-management subcommands run once and exit (no model/API key needed):
+//   nimagent install <name> | uninstall <name> | list | search <query>
+const PKG_CMDS = new Set(["install", "uninstall", "remove", "list", "search"]);
+if (PKG_CMDS.has(args[0])) {
+  const [sub, ...rest] = args;
+  const baseUrl = process.env.NIMAGENT_REGISTRY || project.registry || DEFAULT_REGISTRY;
+  try {
+    if (sub === "install") {
+      const name = rest[0];
+      if (!name) throw new Error("usage: nimagent install <package-name>");
+      infoLine(`installing ${name} from ${baseUrl} …`);
+      const { manifest, installedPaths, needsRestart } = await installPackage(name, { baseUrl });
+      infoLine(`installed ${manifest.name}@${manifest.version || "?"} (${manifest.type}) → ${installedPaths.join(", ")}`);
+      if (needsRestart) infoLine("restart NimAgent to load it.");
+      else infoLine(manifest.command ? `use it with ${manifest.command}` : "ready to use.");
+    } else if (sub === "uninstall" || sub === "remove") {
+      const name = rest[0];
+      if (!name) throw new Error("usage: nimagent uninstall <package-name>");
+      const rec = uninstallPackage(name);
+      infoLine(`uninstalled ${rec.name} (${rec.type}) — removed ${(rec.installedPaths || []).join(", ")}`);
+    } else if (sub === "list") {
+      const installed = listInstalled();
+      if (!installed.length) infoLine("no packages installed. Browse: " + baseUrl);
+      else for (const p of installed) console.log(`  ${p.name.padEnd(24)} ${c.dim(`${p.type} ${p.version}`)}  ${p.description || ""}`);
+    } else if (sub === "search") {
+      const results = await searchRegistry(rest.join(" "), { baseUrl });
+      if (!results.length) infoLine("no matching packages.");
+      else for (const p of results) console.log(`  ${p.name.padEnd(24)} ${c.dim(`${p.type} ${p.version || ""}`)}  ${p.description || ""}\n    ${c.dim("nimagent install " + p.name)}`);
+    }
+    process.exit(0);
+  } catch (e) {
+    errorLine(e.message);
+    process.exit(1);
+  }
+}
 
 // Inject a skill's instructions as a system message, then queue the user's args.
 async function applySkill(skill, arg, msgs, sess) {
@@ -129,7 +192,10 @@ if (promptArg) {
       messages.push({ role: "user", content: promptArg });
       await session.append({ type: "user", content: promptArg });
     }
-    await runTurn({ model, messages, session, maxIterations });
+    if (routerCfg.enabled && !routePinned) {
+      activePersona = await classifyIntent({ message: promptArg, settings });
+    }
+    await runTurn({ model, messages, session, maxIterations, persona: activePersona });
     costLine(session);
     await shutdown(0);
   }
@@ -138,9 +204,9 @@ if (promptArg) {
 // Interactive mode (only when no one-shot prompt was given).
 if (!promptArg) {
 banner(model.key);
-if (loadedExtensions.length || skills.length) {
+if (loadedExtensions.length || skills.length || mcpInfo.servers) {
   infoLine(
-    `loaded ${loadedExtensions.length} extension(s), ${skills.length} skill(s)` +
+    `loaded ${loadedExtensions.length} extension(s), ${skills.length} skill(s), ${mcpInfo.servers} MCP server(s)` +
       (skills.length ? " — " + skills.map((s) => s.command).join(" ") : "")
   );
   console.log("");
@@ -194,6 +260,12 @@ function help() {
       "    /diff                         toggle diff preview for edits",
       "    /compact                      summarize conversation to save tokens",
       "    /resume                       resume last session",
+      "    /packages                     list installed packages",
+      "    /install <name>               install a package from the registry",
+      "    /uninstall <name>             remove an installed package",
+      "    /mcp [reconnect <server>]     MCP server status / reconnect",
+      "    /route [coding|assistant|auto] show or pin the active persona",
+      "    /bridge                       NimTools bridge status + tool count",
       "    /exit, /quit                  leave NimAgent",
       "",
       "  Multi-line: end a line with \\ to continue on the next line.",
@@ -336,7 +408,7 @@ rl.on("line", async (input) => {
     if (skillByCommand.has(cmd)) {
       await applySkill(skillByCommand.get(cmd), arg, messages, session);
       rl.pause();
-      await runTurn({ model, messages, session, maxIterations, diffPreview });
+      await runTurn({ model, messages, session, maxIterations, diffPreview, persona: activePersona });
       console.log("");
       rl.resume();
       return showPrompt();
@@ -615,6 +687,71 @@ rl.on("line", async (input) => {
         infoLine(`default model set to ${k} (saved — used on next launch)`);
         break;
       }
+      case "/packages": {
+        const installed = listInstalled();
+        if (!installed.length) infoLine("no packages installed — browse " + (project.registry || DEFAULT_REGISTRY));
+        else for (const p of installed) console.log(`    ${p.name.padEnd(24)} ${c.dim(`${p.type} ${p.version}`)}  ${c.dim(p.description || "")}`);
+        break;
+      }
+      case "/install": {
+        const name = arg.trim();
+        if (!name) { errorLine("usage: /install <package-name>"); break; }
+        try {
+          const { manifest, installedPaths, needsRestart } = await installPackage(name, { baseUrl: project.registry || DEFAULT_REGISTRY });
+          infoLine(`installed ${manifest.name}@${manifest.version || "?"} (${manifest.type}) → ${installedPaths.join(", ")}`);
+          infoLine(needsRestart ? "restart NimAgent to load it." : (manifest.command ? `use it with ${manifest.command}` : "ready."));
+        } catch (e) { errorLine(e.message); }
+        break;
+      }
+      case "/uninstall": {
+        const name = arg.trim();
+        if (!name) { errorLine("usage: /uninstall <package-name>"); break; }
+        try {
+          const rec = uninstallPackage(name);
+          infoLine(`uninstalled ${rec.name} — restart to fully unload.`);
+        } catch (e) { errorLine(e.message); }
+        break;
+      }
+      case "/route": {
+        const target = arg.trim().toLowerCase();
+        if (!target) {
+          if (!routerCfg.enabled) {
+            infoLine("router is disabled (set router.enabled=true in settings or nimagent.config.json)");
+          } else {
+            const name = activePersona?.id || routerCfg.default || "coding";
+            const pinned = routePinned ? c.yellow(" [pinned]") : c.dim(" [auto]");
+            infoLine(`active persona: ${name}${pinned} — mode: ${routeMode}`);
+          }
+        } else if (target === "auto") {
+          routePinned = false;
+          routeMode = "auto";
+          activePersona = null;
+          infoLine("router set to auto — persona will be classified each turn");
+        } else if (PERSONAS[target]) {
+          activePersona = PERSONAS[target];
+          routePinned = true;
+          infoLine(`persona pinned to "${target}" — use /route auto to unpin`);
+        } else {
+          errorLine(`unknown persona "${target}" — try: coding, assistant, auto`);
+        }
+        break;
+      }
+      case "/bridge": {
+        infoLine(bridgeStatus());
+        break;
+      }
+      case "/mcp": {
+        const sub = arg.trim();
+        if (sub.startsWith("reconnect")) {
+          const srv = sub.split(/\s+/)[1];
+          if (!srv) { errorLine("usage: /mcp reconnect <server>"); break; }
+          try { const conn = await reconnectServer(srv); infoLine(`reconnected ${srv} — ${conn.tools.length} tool(s).`); }
+          catch (e) { errorLine(e.message); }
+        } else {
+          console.log("  " + (await mcpStatus()).replace(/\n/g, "\n  "));
+        }
+        break;
+      }
       default:
         errorLine("unknown command: " + cmd + " (try /help)");
     }
@@ -624,13 +761,20 @@ rl.on("line", async (input) => {
   messages.push({ role: "user", content: fullLine });
   await session.append({ type: "user", content: fullLine });
   rl.pause();
-  await runTurn({ model, messages, session, maxIterations, diffPreview });
+  if (routerCfg.enabled && routeMode === "auto" && !routePinned) {
+    activePersona = await classifyIntent({ message: fullLine, settings });
+    setPersonaIndicator(activePersona);
+  }
+  await runTurn({ model, messages, session, maxIterations, diffPreview, persona: activePersona });
   console.log("");
   rl.resume();
   showPrompt();
 });
 
 rl.on("close", async () => {
+  disconnectAll(); // tear down any live MCP servers
+  disconnectBridge(); // tear down NimTools bridge process
+  killSidecar();     // tear down intent-router sidecar
   if (llama.status().running) {
     llama.stopServer();
     infoLine("stopped local llama server");

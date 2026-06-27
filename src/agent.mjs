@@ -41,7 +41,15 @@ export function systemPrompt() {
   ].join("\n");
 }
 
-export async function runTurn({ model, messages, session, maxIterations = 30, diffPreview = true }) {
+export async function runTurn({ model, messages, session, maxIterations = 30, diffPreview = true, persona = null }) {
+  // If a persona is active, swap the system message and iteration budget.
+  // Falls back to the defaults above when persona is null (existing behaviour).
+  if (persona) {
+    maxIterations = persona.maxIterations ?? maxIterations;
+    if (messages.length > 0 && messages[0].role === "system") {
+      messages[0] = { role: "system", content: persona.systemPrompt() };
+    }
+  }
   for (let i = 0; i < maxIterations; i++) {
     let resp;
     let streamedContent = false;
