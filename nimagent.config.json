@@ -20,7 +20,7 @@
     "directTools": false
   },
   "router": {
-    "enabled": false,
+    "enabled": true,
     "mode": "auto",
     "default": "coding",
     "python": {

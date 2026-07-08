@@ -3,6 +3,7 @@
 
 import readline from "node:readline";
 import { loadSettings, saveSettings, resolveModel, Session, SETTINGS_PATH, HOME, providerKeyMissing, providerKeyEnvVar } from "../src/config.mjs";
+import { listProviderModels, probeModel } from "../src/provider.mjs";
 import { systemPrompt, runTurn } from "../src/agent.mjs";
 import { registerExtensions } from "../src/tools.mjs";
 import { loadProjectConfig, loadSkills, buildSystemPrompt, INSTALL_ROOT, loadMcpConfig } from "../src/extras.mjs";
@@ -44,6 +45,28 @@ if (routerCfg.enabled) {
 let activePersona = null;
 let routeMode = routerCfg.mode || "auto"; // "auto" | "manual"
 let routePinned = false; // true when user manually pinned via /route
+let lastFetchedModels = [];
+let currentAbort = null;
+
+const PROVIDER_PRESETS = {
+  openai: { baseUrl: "https://api.openai.com/v1", label: "OpenAI", reasoningParam: "reasoning_effort" },
+  nvidia: {
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    label: "NVIDIA NIM",
+    api: "openai-completions",
+    nativeTools: false,
+  },
+  openrouter: { baseUrl: "https://openrouter.ai/api/v1", label: "OpenRouter", reasoningParam: "none" },
+  groq: { baseUrl: "https://api.groq.com/openai/v1", label: "Groq", reasoningParam: "none" },
+  deepseek: { baseUrl: "https://api.deepseek.com/v1", label: "DeepSeek" },
+  google: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", label: "Google Gemini" },
+  xai: { baseUrl: "https://api.x.ai/v1", label: "xAI" },
+  mistral: { baseUrl: "https://api.mistral.ai/v1", label: "Mistral", reasoningParam: "none" },
+  together: { baseUrl: "https://api.together.xyz/v1", label: "Together AI", reasoningParam: "none" },
+  fireworks: { baseUrl: "https://api.fireworks.ai/inference/v1", label: "Fireworks", reasoningParam: "none" },
+  ollama: { baseUrl: "http://localhost:11434/v1", label: "Ollama", apiKey: "not-needed", reasoningParam: "none" },
+  local: { baseUrl: "http://localhost:8080/v1", label: "Local llama.cpp", apiKey: "not-needed", reasoningParam: "none" },
+};
 
 // Package-management subcommands run once and exit (no model/API key needed):
 //   nimagent install <name> | uninstall <name> | list | search <query>
@@ -131,6 +154,318 @@ function maskKey(k) {
   return k.slice(0, 6) + "…" + k.slice(-4);
 }
 
+function normalizeProviderKey(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+function modelKeyFor(providerName, id) {
+  const safe = String(id).replace(/^models\//, "").replace(/[^a-zA-Z0-9._:-]+/g, "-");
+  return `${providerName}/${safe}`;
+}
+
+function printReasoningChoices() {
+  const current = settings.reasoning || "medium";
+  infoLine(`reasoning: ${current}`);
+  console.log("    off     no reasoning-effort parameter");
+  console.log("    low     faster / cheaper");
+  console.log("    medium  balanced default");
+  console.log("    high    deeper reasoning");
+  console.log("    extra   maximum effort where supported (sent as high to OpenAI-compatible APIs)");
+  console.log(c.dim("    usage: /reasoning low|medium|high|extra|off"));
+}
+
+async function setReasoningTier(tier) {
+  const t = String(tier || "").toLowerCase();
+  if (!t) return printReasoningChoices();
+  if (!["off", "low", "medium", "high", "extra"].includes(t)) {
+    errorLine("usage: /reasoning low|medium|high|extra|off");
+    return;
+  }
+  settings.reasoning = t;
+  await saveSettings(settings);
+  try { model = resolveModel(settings, model.key); } catch { /* keep current */ }
+  infoLine(`reasoning set to ${t} (saved)`);
+}
+
+function installProviderPreset(name, key = "") {
+  const prov = normalizeProviderKey(name);
+  const preset = PROVIDER_PRESETS[prov];
+  if (!preset) throw new Error(`unknown provider preset "${name}"`);
+  settings.providers[prov] = {
+    ...(settings.providers[prov] || {}),
+    ...preset,
+    apiKey: key || settings.providers[prov]?.apiKey || preset.apiKey || "",
+  };
+  return prov;
+}
+
+function printProviderPresets() {
+  console.log("  Provider presets:");
+  for (const [name, p] of Object.entries(PROVIDER_PRESETS)) {
+    console.log(`    ${name.padEnd(12)} ${c.dim(p.baseUrl)}`);
+  }
+  console.log(c.dim("  usage: /provider setup <name> [apiKey]"));
+}
+
+async function fetchModelsForProvider(providerName, { save = true, filter = "" } = {}) {
+  const provKey = normalizeProviderKey(providerName || model.providerName);
+  const provider = settings.providers[provKey];
+  if (!provider) throw new Error(`unknown provider "${provKey}"`);
+  if (providerKeyMissing({ provider }) && provider.apiKey !== "not-needed") {
+    throw new Error(`provider "${provKey}" needs an API key (/provider login ${provKey} <key>)`);
+  }
+  let ids = await listProviderModels(provider);
+  if (provKey === "nvidia") {
+    ids = ids.filter((id) => id !== "z-ai/glm-5.1");
+    if (!ids.includes("z-ai/glm-5.2")) ids.push("z-ai/glm-5.2");
+    ids.sort((a, b) => a.localeCompare(b));
+  }
+  const q = String(filter || "").toLowerCase();
+  const shown = q ? ids.filter((id) => id.toLowerCase().includes(q)) : ids;
+  lastFetchedModels = shown.map((id, i) => ({ index: i + 1, provider: provKey, id, key: modelKeyFor(provKey, id) }));
+  if (save) {
+    for (const row of lastFetchedModels) {
+      const existing = settings.models[row.key] || {};
+      settings.models[row.key] = {
+        ...existing,
+        provider: row.provider,
+        id: row.id,
+        maxTokens: existing.maxTokens || 8192,
+      };
+    }
+    await saveSettings(settings);
+  }
+  if (!lastFetchedModels.length) {
+    infoLine(`no models returned for ${provKey}${q ? ` matching "${filter}"` : ""}`);
+    return;
+  }
+  infoLine(`${provKey}: ${lastFetchedModels.length} model(s)${save ? " saved" : ""}`);
+  for (const row of lastFetchedModels.slice(0, 80)) {
+    const active = row.key === model.key ? c.green("● ") : "  ";
+    console.log(`    ${active}${String(row.index).padStart(2)}. ${row.key}${modelHealthLabel(row.key)}`);
+  }
+  if (lastFetchedModels.length > 80) console.log(c.dim(`    ... ${lastFetchedModels.length - 80} more`));
+  console.log(c.dim("    choose with /model for arrows, /model <number>, or /model <provider/model>"));
+  return lastFetchedModels;
+}
+
+function modelHealthLabel(key) {
+  const health = settings.models[key]?.health;
+  if (!health) return c.dim(" [?]");
+  if (health.ok) return c.green(" [ok]");
+  if (health.degraded) return c.red(" [degraded]");
+  if (health.retired) return c.red(" [retired]");
+  if (health.timeout) return c.yellow(" [timeout]");
+  return c.yellow(" [unavailable]");
+}
+
+function trimHealthMessage(message) {
+  return String(message || "").replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
+async function doctorModel(keyOrProvider = "") {
+  const wanted = String(keyOrProvider || "").trim();
+  let key = wanted || model.key;
+  if (settings.providers[wanted] && !settings.models[wanted]) key = model.key;
+  if (!settings.models[key] && wanted.includes("/")) {
+    const slash = wanted.indexOf("/");
+    const prov = wanted.slice(0, slash);
+    const id = wanted.slice(slash + 1);
+    if (settings.providers[prov]) {
+      key = wanted;
+      settings.models[key] = { provider: prov, id, maxTokens: 8192 };
+    }
+  }
+  const resolved = resolveModel(settings, key);
+  infoLine(`probing ${resolved.key} (${resolved.id}) ...`);
+  const health = await probeModel(resolved);
+  settings.models[resolved.key].health = health;
+  await saveSettings(settings);
+  if (health.ok) {
+    infoLine(`${resolved.key}: ok`);
+    return health;
+  }
+  const label = health.degraded ? "degraded" : health.retired ? "retired" : health.timeout ? "timeout" : "unavailable";
+  warnLine(`${resolved.key}: ${label} — ${trimHealthMessage(health.message)}`);
+  return health;
+}
+
+function activeModelBlockedByHealth() {
+  const health = settings.models[model.key]?.health;
+  if (!health || health.ok) return false;
+  const checked = Date.parse(health.checkedAt || "");
+  const fresh = Number.isFinite(checked) && (Date.now() - checked) < 10 * 60 * 1000;
+  if (!fresh) return false;
+  const label = health.degraded ? "degraded" : health.retired ? "retired" : health.timeout ? "timed out" : "unavailable";
+  errorLine(`${model.key} is ${label}: ${trimHealthMessage(health.message)}`);
+  infoLine("run /doctor to re-check, or choose another model with /model");
+  return true;
+}
+
+function renderModelPicker(rows, selected, providerName) {
+  const max = Math.min(rows.length, 18);
+  const half = Math.floor(max / 2);
+  let start = Math.max(0, selected - half);
+  start = Math.min(start, Math.max(0, rows.length - max));
+  const visible = rows.slice(start, start + max);
+  process.stdout.write("\x1b[2J\x1b[H");
+  console.log(c.bold(`Select model (${providerName})`));
+  console.log(c.dim("Use ↑/↓, Enter to select, Esc/q to cancel\n"));
+  for (let i = 0; i < visible.length; i++) {
+    const rowIndex = start + i;
+    const row = visible[i];
+    const pointer = rowIndex === selected ? c.cyan("›") : " ";
+    const active = row.key === model.key ? c.green("●") : " ";
+    const label = `${pointer} ${active} ${String(row.index).padStart(2)}. ${row.key}${modelHealthLabel(row.key)}`;
+    console.log(rowIndex === selected ? c.bold(label) : label);
+  }
+  if (rows.length > max) {
+    console.log(c.dim(`\n${selected + 1}/${rows.length}`));
+  }
+}
+
+async function pickModelWithArrows(providerName = model.providerName, filter = "") {
+  const rows = await fetchModelsForProvider(providerName, { save: true, filter });
+  if (!rows?.length) return;
+  if (!canRaw) {
+    warnLine("arrow picker needs an interactive terminal; use /model <number> instead");
+    return;
+  }
+
+  let selected = Math.max(0, rows.findIndex((row) => row.key === model.key));
+  if (selected < 0) selected = 0;
+
+  rl.pause();
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdout.write("\x1b[?25l");
+
+  try {
+    const chosen = await new Promise((resolve) => {
+      const onKeypress = (_str, key = {}) => {
+        if (key.name === "up") {
+          selected = (selected - 1 + rows.length) % rows.length;
+          renderModelPicker(rows, selected, providerName);
+          return;
+        }
+        if (key.name === "down") {
+          selected = (selected + 1) % rows.length;
+          renderModelPicker(rows, selected, providerName);
+          return;
+        }
+        if (key.name === "pageup") {
+          selected = Math.max(0, selected - 10);
+          renderModelPicker(rows, selected, providerName);
+          return;
+        }
+        if (key.name === "pagedown") {
+          selected = Math.min(rows.length - 1, selected + 10);
+          renderModelPicker(rows, selected, providerName);
+          return;
+        }
+        if (key.name === "return") {
+          cleanup();
+          resolve(rows[selected]);
+          return;
+        }
+        if (key.name === "escape" || key.name === "q" || (key.ctrl && key.name === "c")) {
+          cleanup();
+          resolve(null);
+        }
+      };
+      const cleanup = () => {
+        process.stdin.off("keypress", onKeypress);
+      };
+      process.stdin.on("keypress", onKeypress);
+      renderModelPicker(rows, selected, providerName);
+    });
+    process.stdout.write("\x1b[?25h");
+    process.stdin.setRawMode(false);
+    console.log("");
+    if (!chosen) {
+      infoLine("model selection canceled");
+      return;
+    }
+    await switchModel(chosen.key);
+  } finally {
+    process.stdout.write("\x1b[?25h");
+    if (canRaw) process.stdin.setRawMode(false);
+    rl.resume();
+  }
+}
+
+async function ensureLocalModelStarted(selectedModel = model) {
+  if (selectedModel.providerName !== "local") return;
+  const s = llama.status();
+  if (s.running) return;
+  const cfg = llama.llamaConfig(settings);
+  const target = cfg.defaultModel || selectedModel.id;
+  if (!target) {
+    warnLine("local provider selected, but no local model is configured. Use /llama list then /llama start <number>.");
+    return;
+  }
+  infoLine(`auto-starting local llama server (${target}) ...`);
+  const info = await llama.startServer(settings, target, { onLog: (m) => warnLine(m) });
+  settings.providers.local.baseUrl = info.url;
+  settings.models["local/coder"] = {
+    ...(settings.models["local/coder"] || {}),
+    provider: "local",
+    id: info.model,
+    maxTokens: info.contextSize || settings.models["local/coder"]?.maxTokens || 8192,
+  };
+  settings.llama = { ...(settings.llama || {}), defaultModel: info.model };
+  await saveSettings(settings);
+  infoLine(`local llama server ready — ${info.model} @ ${info.url}`);
+}
+
+async function switchModel(keyOrIndex) {
+  const wanted = String(keyOrIndex || "").trim();
+  if (!wanted) {
+    infoLine("current model: " + model.key);
+    try {
+      await fetchModelsForProvider(model.providerName, { save: true });
+    } catch (e) {
+      warnLine(`could not fetch live models for ${model.providerName}: ${e.message}`);
+      infoLine("configured models:");
+      for (const k of Object.keys(settings.models)) {
+        const m = settings.models[k];
+        if (m.provider !== model.providerName) continue;
+        const marker = k === model.key ? c.green("● ") : "  ";
+        console.log("    " + marker + k + modelHealthLabel(k));
+      }
+    }
+    infoLine("use /model <number|provider/model> to switch, /reasoning for Low/Medium/High/Extra");
+    return;
+  }
+  let key = wanted;
+  if (/^\d+$/.test(wanted)) {
+    if (!lastFetchedModels.length) {
+      await fetchModelsForProvider(model.providerName, { save: true });
+    }
+    const row = lastFetchedModels[parseInt(wanted, 10) - 1];
+    if (!row) throw new Error(`no fetched model #${wanted}`);
+    key = row.key;
+  }
+  if (!settings.models[key] && key.includes("/")) {
+    const slash = key.indexOf("/");
+    const prov = key.slice(0, slash);
+    const id = key.slice(slash + 1);
+    if (settings.providers[prov]) {
+      settings.models[key] = { provider: prov, id, maxTokens: 8192 };
+      await saveSettings(settings);
+    }
+  }
+  model = resolveModel(settings, key);
+  if (model.providerName !== "local" && model.provider.apiKey !== "not-needed") {
+    const health = await doctorModel(model.key);
+    if (!health.ok) {
+      warnLine(`selected model is ${health.degraded ? "degraded" : health.retired ? "retired" : "unavailable"} at the provider; choose another with /model`);
+    }
+  }
+  await ensureLocalModelStarted(model);
+  infoLine(`switched to ${model.key} (${model.providerLabel}, reasoning=${model.reasoning})`);
+}
+
 // --set-key <provider> <key>  : set & persist an API key, then exit (non-interactive).
 const ski = args.indexOf("--set-key");
 if (ski !== -1) {
@@ -195,7 +530,12 @@ if (promptArg) {
     if (routerCfg.enabled && !routePinned) {
       activePersona = await classifyIntent({ message: promptArg, settings });
     }
-    await runTurn({ model, messages, session, maxIterations, persona: activePersona });
+    if (activeModelBlockedByHealth()) {
+      await shutdown(1);
+    }
+    currentAbort = new AbortController();
+    await runTurn({ model, messages, session, maxIterations, persona: activePersona, signal: currentAbort.signal });
+    currentAbort = null;
     costLine(session);
     await shutdown(0);
   }
@@ -233,6 +573,33 @@ const rl = readline.createInterface({
   prompt: c.cyan("› "),
 });
 
+// Ctrl-C interrupt: wired to BOTH process and rl.
+// process.on fires when readline is paused (rl.pause() mutes rl.on("SIGINT") on Windows).
+// rl.on fires when readline is active and reading input.
+const handleInterrupt = () => {
+  if (currentAbort) {
+    currentAbort.abort();
+  } else {
+    rl.close();
+  }
+};
+process.on("SIGINT", handleInterrupt);
+rl.on("SIGINT", handleInterrupt);
+
+// ESC detection via raw mode. Only enabled while readline is paused (during generation)
+// so readline echoing is never affected. In raw mode Ctrl-C arrives as 0x03, caught here too.
+const canRaw = process.stdin.isTTY && typeof process.stdin.setRawMode === "function";
+if (canRaw) {
+  readline.emitKeypressEvents(process.stdin);
+  process.stdin.on("data", (chunk) => {
+    if (currentAbort && (chunk[0] === 0x1b || chunk[0] === 0x03)) {
+      currentAbort.abort();
+    }
+  });
+}
+const startInterruptWatch = () => { if (canRaw) { process.stdin.setRawMode(true); process.stdin.resume(); } };
+const stopInterruptWatch  = () => { if (canRaw) { process.stdin.setRawMode(false); } };
+
 // Multi-line support: lines ending with \ continue input
 let multiLine = "";
 
@@ -241,15 +608,19 @@ function help() {
     [
       "",
       "  Commands:",
+      "    /                             show this command menu",
       "    /help                         show this help",
-      "    /model [key]                  show or switch the active model",
-      "    /models                       list configured models",
+      "    /model [provider|key|number]  arrow-select model, or switch by key/number",
+      "    /models [provider] [filter]   fetch available models from provider and save them",
+      "    /reasoning [tier]             show/set reasoning: off, low, medium, high, extra",
       "    /default [key]                set the default model (persisted)",
+      "    /doctor [model]               probe active/named model and save health status",
       "    /addmodel <key> <prov> <id> [maxTokens]   add a model (persisted)",
-      "    /provider [subcmd]            manage providers (list, add, edit, login, logout, apikey, llama)",
+      "    /provider [name|subcmd]        switch/provider setup (list, presets, setup, add, edit, login, logout, apikey)",
       "    /providers                    list providers + masked keys",
       "    /llama list                   list local models numbered",
       "    /llama start <number>         load a model by its list number (or /llama <number>)",
+      "    /llama default <number>       set default local GGUF and auto-start it",
       "    /llama stop | status          stop / show the local llama server",
       "    /apikey <provider> [key]      show or set a provider API key (persisted)",
       "    /addprovider <name> <url> [key]           add a provider (persisted)",
@@ -258,7 +629,8 @@ function help() {
       "    /config                       show config file path",
       "    /cost                         show token usage this session",
       "    /diff                         toggle diff preview for edits",
-      "    /compact                      summarize conversation to save tokens",
+      "    /compact                      compact conversation when it gets long",
+      "    /compact now                  force compact immediately (no minimum length)",
       "    /resume                       resume last session",
       "    /packages                     list installed packages",
       "    /install <name>               install a package from the registry",
@@ -338,6 +710,49 @@ async function llamaCommand(sub, subArg) {
       else warnLine("no llama server running");
       break;
     }
+    case "default":
+    case "use":
+    case "setup": {
+      let target;
+      try {
+        target = pickModel(subArg);
+      } catch (e) {
+        errorLine(e.message);
+        break;
+      }
+      if (!target) {
+        warnLine("which model? run /llama list, then /llama default <number>");
+        break;
+      }
+      settings.llama = { ...(settings.llama || {}), defaultModel: target };
+      installProviderPreset("local");
+      settings.models["local/coder"] = {
+        ...(settings.models["local/coder"] || {}),
+        provider: "local",
+        id: target,
+        maxTokens: settings.models["local/coder"]?.maxTokens || 8192,
+      };
+      await saveSettings(settings);
+      infoLine(`default local model set to ${target}`);
+      if (!llama.status().running) {
+        infoLine("starting local llama server ...");
+        try {
+          const info = await llama.startServer(settings, target, { onLog: (m) => warnLine(m) });
+          settings.providers.local.baseUrl = info.url;
+          settings.models["local/coder"].id = info.model;
+          settings.models["local/coder"].maxTokens = info.contextSize || settings.models["local/coder"].maxTokens;
+          await saveSettings(settings);
+          model = resolveModel(settings, "local/coder");
+          infoLine(`local model ready and selected — ${info.model} @ ${info.url}`);
+        } catch (e) {
+          errorLine(e.message);
+        }
+      } else {
+        model = resolveModel(settings, "local/coder");
+        infoLine("local provider selected; existing llama server is running");
+      }
+      break;
+    }
     case "start":
     case "load": {
       let target;
@@ -357,23 +772,42 @@ async function llamaCommand(sub, subArg) {
         const think = info.thinking ? " · thinking 🧠" : "";
         infoLine(`llama server ready — ${info.model} @ ${info.url} (${info.contextSize} ctx${think})`);
         // Point the "local" provider at the live server and offer a quick switch.
-        if (settings.providers.local) settings.providers.local.baseUrl = info.url;
-        const localModel = Object.keys(settings.models).find((k) => settings.models[k].provider === "local");
-        if (localModel) infoLine(`switch to it with: /model ${localModel}`);
+        installProviderPreset("local");
+        settings.providers.local.baseUrl = info.url;
+        settings.llama = { ...(settings.llama || {}), defaultModel: info.model };
+        settings.models["local/coder"] = {
+          ...(settings.models["local/coder"] || {}),
+          provider: "local",
+          id: info.model,
+          maxTokens: info.contextSize || settings.models["local/coder"]?.maxTokens || 8192,
+        };
+        await saveSettings(settings);
+        model = resolveModel(settings, "local/coder");
+        infoLine("local provider selected: /model local/coder");
       } catch (e) {
         errorLine(e.message);
       }
       break;
     }
     default:
-      errorLine(`unknown /llama subcommand "${sub}". Usage: /llama [list|start [model]|stop|status]`);
+      errorLine(`unknown /llama subcommand "${sub}". Usage: /llama [list|default <number>|start [model]|stop|status]`);
   }
 }
 
 // Render the input frame: a status bar (context usage + model) and a top
 // separator line above the input. The matching bottom line is printed once the
 // user submits, sandwiching their input — a bit like a bottom command panel.
+function clearPendingInput() {
+  if (typeof rl.line === "string") rl.line = "";
+  if (typeof rl.cursor === "number") rl.cursor = 0;
+  if (process.stdout.isTTY) {
+    readline.clearLine(process.stdout, 0);
+    readline.cursorTo(process.stdout, 0);
+  }
+}
+
 function showPrompt() {
+  clearPendingInput();
   statusBar(model, session);
   promptTop();
   rl.prompt();
@@ -404,12 +838,27 @@ rl.on("line", async (input) => {
     const cmd = parts[0];
     const arg = parts.slice(1).join(" ");
 
+    if (cmd === "/" || cmd === "/---" || cmd === "/-") {
+      help();
+      if (skills.length) {
+        console.log("  Skills:");
+        for (const s of skills) console.log(`    ${s.command.padEnd(16)} ${c.dim(s.description)}`);
+        console.log("");
+      }
+      return showPrompt();
+    }
+
     // Skill commands (from skills/*/SKILL.md) run a turn with skill instructions.
     if (skillByCommand.has(cmd)) {
       await applySkill(skillByCommand.get(cmd), arg, messages, session);
       rl.pause();
-      await runTurn({ model, messages, session, maxIterations, diffPreview, persona: activePersona });
+      startInterruptWatch();
+      currentAbort = new AbortController();
+      await runTurn({ model, messages, session, maxIterations, diffPreview, persona: activePersona, signal: currentAbort.signal });
+      currentAbort = null;
+      stopInterruptWatch();
       console.log("");
+      clearPendingInput();
       rl.resume();
       return showPrompt();
     }
@@ -438,6 +887,7 @@ rl.on("line", async (input) => {
       case "/config":
         infoLine("config: " + SETTINGS_PATH);
         infoLine("home:   " + HOME);
+        infoLine("install: " + INSTALL_ROOT);
         break;
       case "/cost":
         costLine(session);
@@ -447,41 +897,66 @@ rl.on("line", async (input) => {
         infoLine("diff preview: " + (diffPreview ? "on" : "off"));
         break;
       case "/compact": {
-        // Keep system prompt + last 2 messages, summarize the rest
-        if (messages.length <= 3) {
-          infoLine("conversation too short to compact");
+        const force = arg.trim().toLowerCase() === "now";
+        if (!force && messages.length <= 3) {
+          infoLine("conversation too short to compact — use /compact now to force");
           break;
         }
         const sys = messages[0];
-        const last2 = messages.slice(-2);
+        const trail = force ? [] : messages.slice(-2);
         messages.length = 0;
         messages.push(sys);
         messages.push({
           role: "system",
           content: "[Earlier conversation was compacted. Continue from here.]",
         });
-        messages.push(...last2);
-        infoLine("compacted conversation (" + messages.length + " messages remaining)");
+        messages.push(...trail);
+        infoLine(`compacted conversation (${messages.length} message(s) remaining)`);
         break;
       }
       case "/models":
-        for (const k of Object.keys(settings.models)) {
-          const m = settings.models[k];
-          const marker = k === model.key ? c.green("● ") : "  ";
-          const info = m.provider ? c.dim(` (${m.provider})`) : "";
-          console.log("    " + marker + k + info);
+        {
+          const [providerArg, ...filterParts] = arg.trim().split(/\s+/).filter(Boolean);
+          if (providerArg) {
+            try {
+              await fetchModelsForProvider(providerArg, { save: true, filter: filterParts.join(" ") });
+            } catch (e) {
+              errorLine(e.message);
+            }
+          } else {
+            infoLine("configured models:");
+            for (const k of Object.keys(settings.models)) {
+              const m = settings.models[k];
+              const marker = k === model.key ? c.green("● ") : "  ";
+              const info = m.provider ? c.dim(` (${m.provider})`) : "";
+              console.log("    " + marker + k + info + modelHealthLabel(k));
+            }
+            infoLine(`fetch live models with /models <provider>; current provider: ${model.providerName}`);
+          }
         }
         break;
       case "/model":
-        if (!arg) {
-          infoLine("current model: " + model.key);
-        } else {
-          try {
-            model = resolveModel(settings, arg);
-            infoLine("switched to " + model.key);
-          } catch (e) {
-            errorLine(e.message);
+        try {
+          const wanted = arg.trim();
+          if (!wanted) {
+            await pickModelWithArrows(model.providerName);
+          } else if (settings.providers[normalizeProviderKey(wanted)]) {
+            await pickModelWithArrows(normalizeProviderKey(wanted));
+          } else {
+            await switchModel(wanted);
           }
+        } catch (e) {
+          errorLine(e.message);
+        }
+        break;
+      case "/reasoning":
+        await setReasoningTier(arg.trim());
+        break;
+      case "/doctor":
+        try {
+          await doctorModel(arg);
+        } catch (e) {
+          errorLine(e.message);
         }
         break;
       case "/resume": {
@@ -498,8 +973,10 @@ rl.on("line", async (input) => {
       case "/providers": {
         for (const [name, p] of Object.entries(settings.providers)) {
           const mark = name === model.providerName ? c.green("● ") : "  ";
-          console.log("    " + mark + name + c.dim(`  ${p.baseUrl || "(no baseUrl)"}  key=${maskKey(p.apiKey)}`));
+          const display = p.label || p.baseUrl || "(no baseUrl)";
+          console.log("    " + mark + name + c.dim(`  ${display}  key=${maskKey(p.apiKey)}`));
         }
+        console.log(c.dim("    presets: /provider presets, setup: /provider setup <name> [apiKey]"));
         break;
       }
       case "/llama": {
@@ -563,12 +1040,66 @@ rl.on("line", async (input) => {
         const subParts = arg.trim().split(/\s+/);
         const sub = subParts[0] || "";
         const subArg = subParts.slice(1).join(" ").trim();
+        // "/provider <name>" — if sub matches a provider key, switch to it directly.
+        const knownSubcmds = new Set(["", "list", "presets", "setup", "add", "edit", "login", "logout", "apikey", "llama", "models"]);
+        if (sub && !knownSubcmds.has(sub) && settings.providers[sub.toLowerCase()]) {
+          const provKey = sub.toLowerCase();
+          // Find the first model that belongs to this provider.
+          const modelKey = Object.keys(settings.models).find(
+            (k) => settings.models[k].provider === provKey
+          );
+          if (!modelKey) {
+            errorLine(`provider "${provKey}" has no models configured — add one with /addmodel`);
+            break;
+          }
+          try {
+            model = resolveModel(settings, modelKey);
+            const label = settings.providers[provKey].label || provKey;
+            infoLine(`switched to ${label} — model: ${modelKey}`);
+          } catch (e) {
+            errorLine(e.message);
+          }
+          break;
+        }
+
         switch (sub) {
           case "":
           case "list": {
             for (const [name, p] of Object.entries(settings.providers)) {
               const mark = name === model.providerName ? c.green("● ") : "  ";
-              console.log("    " + mark + name + c.dim(`  ${p.baseUrl || "(no baseUrl)"}  key=${maskKey(p.apiKey)}`));
+              const display = p.label || p.baseUrl || "(no baseUrl)";
+              console.log("    " + mark + name + c.dim(`  ${display}  key=${maskKey(p.apiKey)}`));
+            }
+            break;
+          }
+          case "presets": {
+            printProviderPresets();
+            break;
+          }
+          case "setup": {
+            const [name, ...keyParts] = subArg.split(/\s+/).filter(Boolean);
+            if (!name) {
+              printProviderPresets();
+              break;
+            }
+            try {
+              const prov = installProviderPreset(name, keyParts.join(" ").trim());
+              await saveSettings(settings);
+              infoLine(`provider ${prov} configured (${settings.providers[prov].baseUrl})`);
+              if (!settings.providers[prov].apiKey) {
+                infoLine(`add key with /provider login ${prov} <apiKey> or env ${providerKeyEnvVar(prov)}`);
+              }
+            } catch (e) {
+              errorLine(e.message);
+            }
+            break;
+          }
+          case "models": {
+            const [prov, ...filterParts] = subArg.split(/\s+/).filter(Boolean);
+            try {
+              await fetchModelsForProvider(prov || model.providerName, { save: true, filter: filterParts.join(" ") });
+            } catch (e) {
+              errorLine(e.message);
             }
             break;
           }
@@ -670,7 +1201,7 @@ rl.on("line", async (input) => {
             break;
           }
           default: {
-            errorLine(`unknown provider subcommand "${sub}". Usage: /provider [list|add|edit|login|logout|apikey|llama]`);
+            errorLine(`unknown provider subcommand "${sub}". Usage: /provider [list|presets|setup|models|add|edit|login|logout|apikey|llama]`);
             break;
           }
         }
@@ -761,12 +1292,24 @@ rl.on("line", async (input) => {
   messages.push({ role: "user", content: fullLine });
   await session.append({ type: "user", content: fullLine });
   rl.pause();
+  startInterruptWatch();
   if (routerCfg.enabled && routeMode === "auto" && !routePinned) {
     activePersona = await classifyIntent({ message: fullLine, settings });
     setPersonaIndicator(activePersona);
   }
-  await runTurn({ model, messages, session, maxIterations, diffPreview, persona: activePersona });
+  if (activeModelBlockedByHealth()) {
+    stopInterruptWatch();
+    console.log("");
+    clearPendingInput();
+    rl.resume();
+    return showPrompt();
+  }
+  currentAbort = new AbortController();
+  await runTurn({ model, messages, session, maxIterations, diffPreview, persona: activePersona, signal: currentAbort.signal });
+  currentAbort = null;
+  stopInterruptWatch();
   console.log("");
+  clearPendingInput();
   rl.resume();
   showPrompt();
 });

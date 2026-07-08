@@ -55,7 +55,6 @@ def build_pipeline():
             max_iter=1000,
             C=1.0,
             solver="lbfgs",
-            multi_class="auto",
         )),
     ])
 
@@ -76,7 +75,7 @@ def train(eval_mode: bool = False) -> None:
 
     with MODEL_PATH.open("wb") as f:
         pickle.dump(pipeline, f)
-    print(f"Saved model → {MODEL_PATH}")
+    print(f"Saved model -> {MODEL_PATH}")
 
 
 if __name__ == "__main__":

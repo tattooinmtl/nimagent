@@ -151,6 +151,49 @@ def trim_prompt(content: str, max_chars: int = MAX_CHARS_DEFAULT) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Jinja2 template renderer (used for providers with chatTemplate configured)
+# ---------------------------------------------------------------------------
+
+def render_template(template_path: str, messages: list, tools=None, **opts) -> dict:
+    """Render a Jinja2 chat template with the given messages and tools."""
+    try:
+        from jinja2 import Environment, FileSystemLoader
+    except ImportError:
+        return {"error": "jinja2 not installed — run: pip install jinja2>=3.1.0"}
+
+    try:
+        tmpl_path = Path(template_path)
+        if not tmpl_path.is_absolute():
+            # Relative paths resolve from the NimAgent install root (parent of router/)
+            tmpl_path = SIDECAR_DIR.parent / template_path
+        if not tmpl_path.exists():
+            return {"error": f"template not found: {tmpl_path}"}
+
+        env = Environment(
+            loader=FileSystemLoader(str(tmpl_path.parent)),
+            keep_trailing_newline=True,
+        )
+
+        def raise_exception(msg: str):
+            raise Exception(msg)
+
+        env.globals["raise_exception"] = raise_exception
+
+        template = env.get_template(tmpl_path.name)
+        rendered = template.render(
+            messages=messages,
+            tools=tools if tools else None,
+            add_generation_prompt=opts.get("add_generation_prompt", True),
+            add_vision_id=opts.get("add_vision_id", False),
+            enable_thinking=opts.get("enable_thinking", True),
+            preserve_thinking=opts.get("preserve_thinking", False),
+        )
+        return {"rendered": rendered}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 def handle(line: str) -> dict:
@@ -170,6 +213,13 @@ def handle(line: str) -> dict:
         content = req.get("content", "")
         max_chars = int(req.get("max_chars", MAX_CHARS_DEFAULT))
         return {"content": trim_prompt(content, max_chars)}
+
+    if t == "render_template":
+        template_path = req.get("template_path", "")
+        messages = req.get("messages", [])
+        tools = req.get("tools")
+        opts = req.get("opts", {})
+        return render_template(template_path, messages, tools, **opts)
 
     if t == "ping":
         return {"pong": True}

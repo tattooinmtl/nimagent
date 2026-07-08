@@ -182,7 +182,7 @@ export function statusBar(model, session) {
     : "";
 
   const left = `${fmtK(used)}/${fmtK(cap)} (${pct}%)`;
-  const provider = model?.providerName || "?";
+  const provider = model?.providerLabel || model?.providerName || "?";
   let id = model?.id || model?.key || "?";
   let right = `(${provider}) ${id}`;
 
@@ -208,10 +208,11 @@ export function startStatus(name = "thinking", interval = 120) {
   if (!process.stdout.isTTY) return;
   if (statusTimer) stopStatus();
   const state = STATES[name] || STATES.thinking;
+  const hint = c.dim("  [ESC / Ctrl-C to stop]");
   let i = 0;
   statusTimer = setInterval(() => {
     const frame = state.frames[i % state.frames.length];
-    process.stdout.write("\r\x1b[2K  " + state.color(frame));
+    process.stdout.write("\r\x1b[2K  " + state.color(frame) + hint);
     i++;
   }, interval);
   // Don't let the spinner keep the event loop alive on exit.

@@ -20,6 +20,37 @@ export function loadProjectConfig() {
   }
 }
 
+// Persist a shallow patch into nimagent.config.json (read-modify-write so we
+// never clobber concurrent edits to other keys). Used by the package installer
+// to add/remove `extensions` and `mcpServers` entries. Pretty-printed UTF-8.
+export function writeProjectConfig(patch) {
+  let current = {};
+  try {
+    current = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+  } catch {
+    /* start from empty if missing/unparseable */
+  }
+  const next = { ...current, ...patch };
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + "\n", "utf8");
+  return next;
+}
+
+// Merge MCP server definitions from nimagent.config.json and a project-local
+// .mcp.json (the vendor-neutral standard). .mcp.json wins on name collisions.
+// Returns { servers: { <name>: def }, settings: {...} }.
+export function loadMcpConfig(config = loadProjectConfig()) {
+  const servers = { ...(config.mcpServers || {}) };
+  const settings = { idleTimeout: 10, directTools: false, ...(config.mcp || {}) };
+  try {
+    const dotMcp = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".mcp.json"), "utf8"));
+    Object.assign(servers, dotMcp.mcpServers || {});
+    if (dotMcp.settings) Object.assign(settings, dotMcp.settings);
+  } catch {
+    /* no .mcp.json in cwd — fine */
+  }
+  return { servers, settings };
+}
+
 function readPromptText(config) {
   if (!config.promptFile) return null;
   try {

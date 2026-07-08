@@ -128,14 +128,14 @@ function _send(req) {
   });
 }
 
-async function _sidecarCall(req, pythonExe) {
+async function _sidecarCall(req, pythonExe, timeoutMs = TIMEOUT_MS) {
   if (!_proc && !_dead) _spawnSidecar(pythonExe);
   if (!_proc) return null;
 
   return Promise.race([
     _send(req),
     new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("sidecar timeout")), TIMEOUT_MS)
+      setTimeout(() => reject(new Error("sidecar timeout")), timeoutMs)
     ),
   ]).catch(() => null);
 }
@@ -186,4 +186,58 @@ export function killSidecar() {
     _proc = null;
     _rl   = null;
   }
+}
+
+/**
+ * Render a Jinja2 chat template via the Python sidecar.
+ * messages must be in OpenAI format; tool_call arguments are auto-converted
+ * from JSON strings to objects so the template can iterate over them.
+ * Mid-conversation system messages (compact notices etc.) are coerced to
+ * user messages since the Qwythos template requires system to be first-only.
+ * Returns the rendered prompt string, or throws on error.
+ */
+export async function renderTemplate(templatePath, messages, tools = [], settings = {}) {
+  const pythonExe = settings.router?.python?.interpreter || "python";
+
+  // Coerce non-first system messages and unwrap tool_call arguments
+  const renderMessages = messages.map((msg, i) => {
+    if (msg.role === "system" && i > 0) {
+      return { role: "user", content: `[${msg.content}]` };
+    }
+    if (msg.role === "assistant" && msg.tool_calls?.length) {
+      return {
+        ...msg,
+        tool_calls: msg.tool_calls.map((tc) => ({
+          ...tc,
+          function: {
+            ...tc.function,
+            arguments: (() => {
+              try {
+                return typeof tc.function.arguments === "string"
+                  ? JSON.parse(tc.function.arguments)
+                  : tc.function.arguments;
+              } catch { return {}; }
+            })(),
+          },
+        })),
+      };
+    }
+    return msg;
+  });
+
+  const result = await _sidecarCall(
+    {
+      type: "render_template",
+      template_path: templatePath,
+      messages: renderMessages,
+      tools: tools.length ? tools : null,
+      opts: { add_generation_prompt: true },
+    },
+    pythonExe,
+    5000,   // template rendering can take a bit; 5 s is generous
+  );
+
+  if (!result) throw new Error("sidecar unavailable for template rendering");
+  if (result.error) throw new Error(`Template render: ${result.error}`);
+  return result.rendered;
 }
