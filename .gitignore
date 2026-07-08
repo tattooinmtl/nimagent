@@ -26,3 +26,11 @@ site/downloads/*.zip
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Python cache artifacts
+__pycache__/
+*.pyc
+
+# Local release outputs
+dist/
+
