@@ -14,13 +14,10 @@ import {
 // Returns [] when the response contains no tool invocations.
 function parseQwythosToolCalls(content) {
   const calls = [];
-  const toolRe = /<tool_call>\s*<function=([^\n>]+)>([\s\S]*?)<\/function>\s*<\/tool_call>/g;
-  let m;
-  while ((m = toolRe.exec(content)) !== null) {
-    const name = m[1].trim();
-    const body = m[2];
+  const toolRe = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  const parseParams = (body) => {
     const args = {};
-    const paramRe = /<parameter=([^\n>]+)>([\s\S]*?)<\/parameter>/g;
+    const paramRe = /<(?:parameter|arg)=([^\n>]+)>([\s\S]*?)(?:<\/(?:parameter|arg|arg_value)>)/g;
     let pm;
     while ((pm = paramRe.exec(body)) !== null) {
       const k = pm[1].trim();
@@ -28,6 +25,31 @@ function parseQwythosToolCalls(content) {
       try { v = JSON.parse(v); } catch { /* keep as string */ }
       args[k] = v;
     }
+    return args;
+  };
+  let m;
+  while ((m = toolRe.exec(content)) !== null) {
+    const block = m[1].trim();
+    let name = null;
+    let args = {};
+
+    // Canonical form:
+    // <tool_call><function=name>...<parameter=...>...</parameter>...</function></tool_call>
+    const fnMatch = block.match(/<function=([^\n>]+)>([\s\S]*?)<\/function>/);
+    if (fnMatch) {
+      name = fnMatch[1].trim();
+      args = parseParams(fnMatch[2]);
+    } else {
+      // Fallback used by some models:
+      // <tool_call>tool_name<parameter=...>...</parameter></tool_call>
+      const compactMatch = block.match(/^\s*([^<\s][^<]*)/);
+      if (compactMatch) {
+        name = compactMatch[1].trim();
+        args = parseParams(block);
+      }
+    }
+
+    if (!name) continue;
     calls.push({
       id: `qwy_${Date.now()}_${calls.length}`,
       type: "function",
