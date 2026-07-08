@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NimAgent Packages</title>
+<style>
+  :root {
+    --bg: #15110a;
+    --panel: #1f1810;
+    --border: #3a2e1c;
+    --text: #f3ead8;
+    --dim: #9a8f7a;
+    --accent: #ffb000;
+    --accent2: #ff6e00;
+    --skill: #4fc3f7;
+    --extension: #7ee081;
+    --mcp: #c879e0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 50% -200px, #2a1f10, var(--bg));
+    color: var(--text);
+    font: 15px/1.5 ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    min-height: 100vh;
+  }
+  header { max-width: 960px; margin: 0 auto; padding: 56px 20px 24px; }
+  h1 {
+    margin: 0 0 6px; font-size: 34px; letter-spacing: -0.5px;
+    background: linear-gradient(92deg, #ffd600, #ffb000 40%, #ff6e00 70%, #ce4078);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .tag { color: var(--dim); margin: 0 0 22px; }
+  .install-hint { color: var(--dim); font-size: 13px; }
+  .install-hint code { color: var(--accent); }
+  .controls { max-width: 960px; margin: 0 auto; padding: 0 20px 18px; }
+  #search {
+    width: 100%; padding: 11px 14px; border-radius: 9px;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); font: inherit;
+  }
+  #search:focus { outline: none; border-color: var(--accent); }
+  main { max-width: 960px; margin: 0 auto; padding: 4px 20px 80px; display: grid; gap: 14px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 18px; transition: border-color .15s;
+  }
+  .card:hover { border-color: #54421f; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .name { font-size: 17px; font-weight: 600; color: var(--text); }
+  .ver { color: var(--dim); font-size: 12px; }
+  .badge {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor;
+  }
+  .badge.skill { color: var(--skill); }
+  .badge.extension { color: var(--extension); }
+  .badge.mcp { color: var(--mcp); }
+  .desc { color: var(--dim); margin: 9px 0 13px; }
+  .cmd {
+    display: flex; align-items: stretch; gap: 0;
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    background: #110d07;
+  }
+  .cmd code { flex: 1; padding: 9px 12px; color: var(--accent); white-space: nowrap; overflow-x: auto; }
+  .cmd button {
+    border: 0; border-left: 1px solid var(--border);
+    background: transparent; color: var(--dim); cursor: pointer;
+    padding: 0 14px; font: inherit; transition: color .15s, background .15s;
+  }
+  .cmd button:hover { color: var(--text); background: #1c1610; }
+  .cmd button.copied { color: var(--extension); }
+  footer { max-width: 960px; margin: 0 auto; padding: 0 20px 60px; color: var(--dim); font-size: 12px; }
+  footer a { color: var(--accent); }
+  .empty { color: var(--dim); padding: 40px 0; text-align: center; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>NimAgent Packages</h1>
+    <p class="tag">Skills, tool extensions, and MCP adapters for NimAgent.</p>
+    <p class="install-hint">Install from your terminal: <code>nimagent install &lt;name&gt;</code></p>
+  </header>
+  <div class="controls">
+    <input id="search" type="search" placeholder="Search packages…" autocomplete="off" />
+  </div>
+  <main id="list"><p class="empty">Loading…</p></main>
+  <footer>
+    Registry: <a href="./registry.json">registry.json</a> ·
+    Packages execute code and influence agent behavior — review the source before installing.
+  </footer>
+
+<script>
+const list = document.getElementById("list");
+const search = document.getElementById("search");
+let packages = [];
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function render(items) {
+  if (!items.length) {
+    list.innerHTML = '<p class="empty">No packages match.</p>';
+    return;
+  }
+  list.innerHTML = items.map((p) => {
+    const cmd = "nimagent install " + p.name;
+    const sub = p.type === "skill" && p.command ? ` · use ${escapeHtml(p.command)}` : "";
+    return `
+      <div class="card">
+        <div class="row">
+          <span class="name">${escapeHtml(p.name)}</span>
+          <span class="badge ${escapeHtml(p.type)}">${escapeHtml(p.type)}</span>
+          <span class="ver">v${escapeHtml(p.version || "0.0.0")}${sub}</span>
+        </div>
+        <p class="desc">${escapeHtml(p.description || "")}</p>
+        <div class="cmd">
+          <code>$ ${escapeHtml(cmd)}</code>
+          <button type="button" data-cmd="${escapeHtml(cmd)}">Copy</button>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+function applyFilter() {
+  const q = search.value.trim().toLowerCase();
+  if (!q) return render(packages);
+  render(packages.filter((p) =>
+    (p.name + " " + (p.description || "") + " " + p.type).toLowerCase().includes(q)));
+}
+
+list.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-cmd]");
+  if (!btn) return;
+  navigator.clipboard.writeText(btn.dataset.cmd).then(() => {
+    btn.textContent = "Copied!";
+    btn.classList.add("copied");
+    setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1400);
+  });
+});
+
+search.addEventListener("input", applyFilter);
+
+fetch("./registry.json", { cache: "no-store" })
+  .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+  .then((reg) => {
+    packages = (reg.packages || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+    applyFilter();
+  })
+  .catch((err) => { list.innerHTML = '<p class="empty">Failed to load registry.json (' + escapeHtml(err.message) + ').</p>'; });
+</script>
+</body>
+</html>

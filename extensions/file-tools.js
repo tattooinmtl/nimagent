@@ -5,7 +5,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const resolve = (p) => path.resolve(process.cwd(), p);
+function resolve(p) {
+  const root = path.resolve(process.cwd());
+  const full = path.resolve(root, p);
+  const rel = path.relative(root, full);
+  if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return full;
+  throw new Error(`path escapes workspace: ${rel || full}`);
+}
 
 export default {
   name: "file-tools",

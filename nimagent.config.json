@@ -12,5 +12,28 @@
     "skills/html-game-builder",
     "skills/vs-project-starter"
   ],
-  "autoDiscoverSkills": true
+  "autoDiscoverSkills": true,
+  "registry": "https://globalwarningnetworks.com/repo",
+  "mcpServers": {},
+  "mcp": {
+    "idleTimeout": 10,
+    "directTools": false
+  },
+  "router": {
+    "enabled": true,
+    "mode": "auto",
+    "default": "coding",
+    "python": {
+      "interpreter": "python",
+      "confidenceThreshold": 0.60,
+      "timeoutMs": 150
+    }
+  },
+  "bridge": {
+    "enabled": false,
+    "hermesRoot": "C:\\hermes-agent",
+    "python": {
+      "interpreter": "python"
+    }
+  }
 }

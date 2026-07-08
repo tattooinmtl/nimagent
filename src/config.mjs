@@ -28,17 +28,86 @@ export const SESSIONS_DIR = path.join(HOME, "sessions");
 // See settings.example.json for a fully-commented template.
 const DEFAULT_SETTINGS = {
   defaultProvider: "nvidia",
-  defaultModel: "nvidia/glm-5.1",
+  defaultModel: "nvidia/glm-5.2",
+  reasoning: "medium",
   maxToolIterations: 30,
   diffPreview: true,
   providers: {
+    openai: {
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "",
+      label: "OpenAI",
+      reasoningParam: "reasoning_effort",
+    },
     nvidia: {
       baseUrl: "https://integrate.api.nvidia.com/v1",
       apiKey: "", // get a free key at https://build.nvidia.com
+      label: "NVIDIA NIM",
+      api: "openai-completions",
+      nativeTools: false,
+    },
+    openrouter: {
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "",
+      label: "OpenRouter",
+      reasoningParam: "none",
+    },
+    groq: {
+      baseUrl: "https://api.groq.com/openai/v1",
+      apiKey: "",
+      label: "Groq",
+      reasoningParam: "none",
+    },
+    deepseek: {
+      baseUrl: "https://api.deepseek.com/v1",
+      apiKey: "",
+      label: "DeepSeek",
+    },
+    google: {
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      apiKey: "",
+      label: "Google Gemini",
+    },
+    xai: {
+      baseUrl: "https://api.x.ai/v1",
+      apiKey: "",
+      label: "xAI",
+    },
+    mistral: {
+      baseUrl: "https://api.mistral.ai/v1",
+      apiKey: "",
+      label: "Mistral",
+      reasoningParam: "none",
+    },
+    together: {
+      baseUrl: "https://api.together.xyz/v1",
+      apiKey: "",
+      label: "Together AI",
+      reasoningParam: "none",
+    },
+    fireworks: {
+      baseUrl: "https://api.fireworks.ai/inference/v1",
+      apiKey: "",
+      label: "Fireworks",
+      reasoningParam: "none",
+    },
+    ollama: {
+      baseUrl: "http://localhost:11434/v1",
+      apiKey: "not-needed",
+      label: "Ollama",
+      reasoningParam: "none",
     },
     local: {
       baseUrl: "http://localhost:8080/v1",
       apiKey: "not-needed", // local llama.cpp server needs no key
+      label: "Local llama.cpp",
+      reasoningParam: "none",
+    },
+    gwn: {
+      baseUrl: "http://173.212.202.219:8000/v1",
+      apiKey: "not-needed",
+      label: "GWN (free)",  // shown in UI instead of the raw URL
+      chatTemplate: "templates/qwythos_chat_template.j2",
     },
   },
   // Local llama.cpp server (bundled llama-server.exe). Drives the "local"
@@ -56,11 +125,39 @@ const DEFAULT_SETTINGS = {
     extraArgs: [],
   },
   models: {
-    "nvidia/glm-5.1": { provider: "nvidia", id: "z-ai/glm-5.1", maxTokens: 16384 },
+    "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384 },
+    "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384 },
+    "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true },
+    "gwn/mythos": { provider: "gwn", id: "Qwythos-9B-Mythos", maxTokens: 32768 },
+    "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 16384 },
     "nvidia/llama-3.3-70b": { provider: "nvidia", id: "meta/llama-3.3-70b-instruct", maxTokens: 4096 },
     "nvidia/qwen3.5-397b": { provider: "nvidia", id: "qwen/qwen3.5-397b-a17b", maxTokens: 16384 },
     "nvidia/deepseek-v4-pro": { provider: "nvidia", id: "deepseek-ai/deepseek-v4-pro", maxTokens: 16384 },
     "local/coder": { provider: "local", id: "Qwopus3.5-9B-Coder.i1-Q6_K", maxTokens: 8192 },
+  },
+  // Intent router — classifies each turn as "coding" or "assistant" using a
+  // warm Python sidecar + local ML (sub-ms, free, no network).
+  // Set enabled:true to activate.  mode:"auto" classifies every turn;
+  // mode:"manual" only changes persona via /route command.
+  router: {
+    enabled: false,
+    mode: "auto",         // "auto" | "manual"
+    default: "coding",
+    python: {
+      interpreter: "python",   // override with venv path: "router/.venv/Scripts/python.exe"
+      confidenceThreshold: 0.60,
+      timeoutMs: 150,
+    },
+  },
+  // NimTools bridge — exposes the full hermes capability set as a single
+  // "nimtools" proxy tool (browser, computer_use, media gen, memory, etc.).
+  // Set enabled:true to activate.  hermesRoot defaults to C:\hermes-agent.
+  bridge: {
+    enabled: false,
+    hermesRoot: "C:\\hermes-agent",
+    python: {
+      interpreter: "python",   // override with hermes venv: "C:\\hermes-agent\\.venv\\Scripts\\python.exe"
+    },
   },
 };
 
@@ -104,6 +201,29 @@ function applyEnvKeyOverrides(settings) {
   }
 }
 
+function migrateSettings(settings) {
+  if (settings.defaultModel === "nvidia/glm-5.1") {
+    settings.defaultModel = "nvidia/glm-5.2";
+  }
+  if (settings.models?.["nvidia/glm-5.1"]?.id === "z-ai/glm-5.1") {
+    delete settings.models["nvidia/glm-5.1"];
+  }
+  if (settings.providers?.nvidia) {
+    settings.providers.nvidia.nativeTools = false;
+    settings.providers.nvidia.api ||= "openai-completions";
+    delete settings.providers.nvidia.reasoningParam;
+  }
+  return settings;
+}
+
+function mergeProviders(savedProviders = {}) {
+  const merged = { ...DEFAULT_SETTINGS.providers };
+  for (const [name, provider] of Object.entries(savedProviders || {})) {
+    merged[name] = { ...(merged[name] || {}), ...(provider || {}) };
+  }
+  return merged;
+}
+
 export function ensureHome() {
   fs.mkdirSync(HOME, { recursive: true });
   fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -119,11 +239,22 @@ export async function loadSettings() {
     const raw = await fs.promises.readFile(SETTINGS_PATH, "utf8");
     // tolerate // comments like pi's settings
     const stripped = raw.replace(/^\s*\/\/.*$/gm, "");
-    const settings = { ...DEFAULT_SETTINGS, ...JSON.parse(stripped) };
+    const saved = JSON.parse(stripped);
+    // Deep-merge providers and models so new defaults are always available
+    // even when an existing settings.json pre-dates them.
+    // User values win on collision (saved spreads after defaults).
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      ...saved,
+      providers: mergeProviders(saved.providers),
+      models:    { ...DEFAULT_SETTINGS.models,    ...(saved.models    || {}) },
+    };
+    migrateSettings(settings);
     applyEnvKeyOverrides(settings);
     return settings;
   } catch {
     const settings = { ...DEFAULT_SETTINGS };
+    migrateSettings(settings);
     applyEnvKeyOverrides(settings);
     return settings;
   }
@@ -143,7 +274,17 @@ export function resolveModel(settings, modelKey) {
   if (!m) throw new Error(`Unknown model "${key}". Known: ${Object.keys(settings.models).join(", ")}`);
   const provider = settings.providers[m.provider];
   if (!provider) throw new Error(`Provider "${m.provider}" not configured.`);
-  return { key, id: m.id, maxTokens: m.maxTokens || 8192, provider, providerName: m.provider };
+  return {
+    key,
+    id: m.id,
+    maxTokens: m.maxTokens || 8192,
+    provider,
+    providerName: m.provider,
+    providerLabel: provider.label || m.provider,
+    chatTemplate: provider.chatTemplate || null,
+    reasoning: m.reasoning === false ? "off" : (settings.reasoning || "medium"),
+    nativeTools: m.nativeTools !== false && provider.nativeTools !== false,
+  };
 }
 
 // Whether the active model's provider still needs an API key. The "not-needed"

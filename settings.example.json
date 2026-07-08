@@ -10,7 +10,8 @@
 // environment variables (NIMAGENT_<PROVIDER>_KEY), which override the file.
 {
   "defaultProvider": "nvidia",
-  "defaultModel": "nvidia/glm-5.1",
+  "defaultModel": "nvidia/glm-5.2",
+  "reasoning": "medium",
   "maxToolIterations": 30,
   "diffPreview": true,
 
@@ -20,7 +21,9 @@
     // free key: https://build.nvidia.com
     "nvidia": {
       "baseUrl": "https://integrate.api.nvidia.com/v1",
-      "apiKey": ""
+      "apiKey": "",
+      "api": "openai-completions",
+      "nativeTools": false
     },
     "openai": {
       "baseUrl": "https://api.openai.com/v1",
@@ -28,20 +31,50 @@
     },
     "openrouter": {
       "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "",
+      "reasoningParam": "none"
+    },
+    "groq": {
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "apiKey": "",
+      "reasoningParam": "none"
+    },
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com/v1",
       "apiKey": ""
+    },
+    "google": {
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "apiKey": ""
+    },
+    "xai": {
+      "baseUrl": "https://api.x.ai/v1",
+      "apiKey": ""
+    },
+    "mistral": {
+      "baseUrl": "https://api.mistral.ai/v1",
+      "apiKey": "",
+      "reasoningParam": "none"
+    },
+    "ollama": {
+      "baseUrl": "http://localhost:11434/v1",
+      "apiKey": "not-needed",
+      "reasoningParam": "none"
     },
     // bundled llama.cpp server — no key required
     "local": {
       "baseUrl": "http://localhost:8080/v1",
-      "apiKey": "not-needed"
+      "apiKey": "not-needed",
+      "reasoningParam": "none"
     }
   },
 
   // Model catalog: <key> -> { provider, id, maxTokens }. Switch with /model <key>.
   "models": {
-    "nvidia/glm-5.1":       { "provider": "nvidia",     "id": "z-ai/glm-5.1",                "maxTokens": 16384 },
+    "nvidia/glm-5.2":       { "provider": "nvidia",     "id": "z-ai/glm-5.2",                "maxTokens": 16384 },
     "nvidia/llama-3.3-70b": { "provider": "nvidia",     "id": "meta/llama-3.3-70b-instruct", "maxTokens": 4096 },
-    "openai/gpt-4o":        { "provider": "openai",     "id": "gpt-4o",                      "maxTokens": 16384 },
+    "openai/gpt-4.1":       { "provider": "openai",     "id": "gpt-4.1",                     "maxTokens": 16384 },
+    "openai/o4-mini":       { "provider": "openai",     "id": "o4-mini",                     "maxTokens": 16384, "reasoning": true },
     "openrouter/sonnet":    { "provider": "openrouter", "id": "anthropic/claude-3.5-sonnet", "maxTokens": 8192 },
     "local/coder":          { "provider": "local",      "id": "your-model-name",             "maxTokens": 8192 }
   },

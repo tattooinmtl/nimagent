@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "generatedAt": "2026-06-26T18:36:13.242Z",
+  "packages": [
+    {
+      "name": "changelog",
+      "type": "skill",
+      "version": "1.0.0",
+      "description": "Generate or update CHANGELOG.md from recent git history.",
+      "command": "/changelog",
+      "url": "https://globalwarningnetworks.com/repo/downloads/changelog-1.0.0.zip",
+      "sha256": "138b667cae25d97fa00ab428e8a21719198c21d55c4b37fdeeead73ca9be7a21"
+    },
+    {
+      "name": "everything",
+      "type": "mcp",
+      "version": "1.0.0",
+      "description": "MCP 'everything' reference server (echo, add, longRunningOperation, …) — great for testing the mcp proxy.",
+      "url": "https://globalwarningnetworks.com/repo/downloads/everything-1.0.0.zip",
+      "sha256": "95f65de490fd7ac8c35d5d047b08b4e1f44f3011f9eded282d04945cd603c1c0"
+    },
+    {
+      "name": "hash-tools",
+      "type": "extension",
+      "version": "1.0.0",
+      "description": "Adds hash_text and hash_file tools (md5/sha1/sha256/sha512).",
+      "url": "https://globalwarningnetworks.com/repo/downloads/hash-tools-1.0.0.zip",
+      "sha256": "6b384f032e01f4a14789c0ab1427795a8e2a04f4fb202bc03d31b77b43c8899c"
+    }
+  ]
+}

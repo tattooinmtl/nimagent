@@ -161,6 +161,11 @@ export function promptBottom() { if (process.stdout.isTTY) hr(c.gray); }
 
 // Bottom status bar: context usage on the left, provider/model on the right,
 // right-justified to the terminal width. Rendered as part of the prompt frame.
+// Persona indicator shown in the status bar when the router is active.
+// Pass persona object (from PERSONAS) or null.
+let _activePersona = null;
+export function setPersonaIndicator(persona) { _activePersona = persona; }
+
 export function statusBar(model, session) {
   if (!process.stdout.isTTY) return;
   const width = process.stdout.columns || 80;
@@ -171,24 +176,30 @@ export function statusBar(model, session) {
   const cap = (model && model.maxTokens) || 0;
   const pct = cap ? Math.min(100, Math.round((used / cap) * 100)) : 0;
 
+  // Persona tag: "[coding]" or "[assistant]" when router is active.
+  const personaTag = _activePersona
+    ? c.yellow(`[${_activePersona.label}] `)
+    : "";
+
   const left = `${fmtK(used)}/${fmtK(cap)} (${pct}%)`;
-  const provider = model?.providerName || "?";
+  const provider = model?.providerLabel || model?.providerName || "?";
   let id = model?.id || model?.key || "?";
   let right = `(${provider}) ${id}`;
 
   // Truncate the model id if the bar would overflow the terminal width.
-  let gap = width - left.length - right.length;
+  const personaLen = _activePersona ? _activePersona.label.length + 3 : 0;
+  let gap = width - left.length - right.length - personaLen;
   if (gap < 1) {
-    const over = 1 - gap + 1; // +1 for the ellipsis
+    const over = 1 - gap + 1;
     if (id.length > over) {
       id = id.slice(0, id.length - over) + "…";
       right = `(${provider}) ${id}`;
     }
-    gap = Math.max(1, width - left.length - right.length);
+    gap = Math.max(1, width - left.length - right.length - personaLen);
   }
 
   process.stdout.write(
-    c.gray(left) + " ".repeat(gap) + c.dim(`(${provider}) `) + c.gray(id) + "\n"
+    c.gray(left) + " ".repeat(gap) + personaTag + c.dim(`(${provider}) `) + c.gray(id) + "\n"
   );
 }
 
@@ -197,10 +208,11 @@ export function startStatus(name = "thinking", interval = 120) {
   if (!process.stdout.isTTY) return;
   if (statusTimer) stopStatus();
   const state = STATES[name] || STATES.thinking;
+  const hint = c.dim("  [ESC / Ctrl-C to stop]");
   let i = 0;
   statusTimer = setInterval(() => {
     const frame = state.frames[i % state.frames.length];
-    process.stdout.write("\r\x1b[2K  " + state.color(frame));
+    process.stdout.write("\r\x1b[2K  " + state.color(frame) + hint);
     i++;
   }, interval);
   // Don't let the spinner keep the event loop alive on exit.
