@@ -130,3 +130,4 @@ All are MIT/Apache/permissively licensed; install the builds for your platform.
                        status bar, input frame, diff preview
   agent/settings.json  (generated on first run)
 ```
+
