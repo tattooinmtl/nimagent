@@ -352,6 +352,8 @@ function argSummary(name, args) {
       return args.id || "";
     case "web_search":
       return args.query || "";
+    case "web_fetch":
+      return args.url || "";
     case "system_info":
       return "";
     case "dev_env_report":
