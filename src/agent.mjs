@@ -131,7 +131,32 @@ export function systemPrompt() {
   ].join("\n");
 }
 
-export async function runTurn({ model, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null }) {
+// Tools the user answered "always allow" for this session (permission "ask").
+const alwaysAllowed = new Set();
+
+// Resolve a tool call against the user's permission settings.
+// States: "allow" (silent), "deny" (blocked with an error message the model
+// sees), "ask" (interactive confirmation via the REPL). "*" sets the default
+// for unlisted tools; no entry at all means allow.
+async function checkPermission(name, summary, permissions, confirmTool) {
+  const state = (permissions && (permissions[name] ?? permissions["*"])) || "allow";
+  if (state === "deny") {
+    return { allowed: false, message: `DENIED: the user's permission settings block the "${name}" tool. Do not retry it; use another approach or ask the user.` };
+  }
+  if (state !== "ask" || alwaysAllowed.has(name)) return { allowed: true };
+  if (!confirmTool) {
+    return { allowed: false, message: `DENIED: "${name}" requires interactive confirmation (permission "ask") but this session is non-interactive.` };
+  }
+  const answer = String((await confirmTool(name, summary)) || "").trim().toLowerCase();
+  if (answer === "a" || answer === "always") {
+    alwaysAllowed.add(name);
+    return { allowed: true };
+  }
+  if (answer === "y" || answer === "yes") return { allowed: true };
+  return { allowed: false, message: `DENIED: the user declined the "${name}" tool call.` };
+}
+
+export async function runTurn({ model, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null }) {
   // If a persona is active, swap the system message and iteration budget.
   // Falls back to the defaults above when persona is null (existing behaviour).
   if (persona) {
@@ -286,14 +311,25 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
       return { call, name, args };
     });
 
+    // Resolve permissions sequentially BEFORE parallel execution so "ask"
+    // confirmations don't interleave on the terminal.
+    for (const p of parsed) {
+      p.permission = await checkPermission(p.name, argSummary(p.name, p.args), permissions, confirmTool);
+      if (!p.permission.allowed) warnLine(`${p.name}: ${p.permission.message.split(":")[0].toLowerCase()} by permissions`);
+    }
+
     startStatus(statusForTools(calls));
     const toolResults = await Promise.all(
-      parsed.map(async ({ call, name, args }) => {
+      parsed.map(async ({ call, name, args, permission }) => {
         let result;
-        try {
-          result = await runTool(name, args);
-        } catch (e) {
-          result = "ERROR: " + e.message;
+        if (!permission.allowed) {
+          result = permission.message;
+        } else {
+          try {
+            result = await runTool(name, args);
+          } catch (e) {
+            result = "ERROR: " + e.message;
+          }
         }
         return { call, name, args, result };
       })
@@ -354,6 +390,16 @@ function argSummary(name, args) {
       return args.query || "";
     case "web_fetch":
       return args.url || "";
+    case "youtube_transcript":
+      return args.url || "";
+    case "memory_save":
+      return (args.text || "").slice(0, 60);
+    case "memory_search":
+      return args.query || "";
+    case "memory_list":
+      return "";
+    case "memory_forget":
+      return args.id || "";
     case "system_info":
       return "";
     case "dev_env_report":

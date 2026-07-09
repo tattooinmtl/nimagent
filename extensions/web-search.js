@@ -70,6 +70,133 @@ async function ddgLite(query, maxResults = 8) {
   return results.length ? results.join("\n") : "(no results)";
 }
 
+// ---------------------------------------------------------------------------
+// YouTube transcript extraction — native, no API key, no external AI service.
+// Reads the watch page's ytInitialPlayerResponse, picks a caption track, and
+// fetches it in json3 format. The agent summarizes the transcript itself.
+// ---------------------------------------------------------------------------
+
+function extractVideoId(urlOrId) {
+  const s = String(urlOrId || "").trim();
+  if (/^[\w-]{11}$/.test(s)) return s;
+  const m = s.match(
+    /(?:youtube\.com\/(?:watch\?[^#]*v=|shorts\/|live\/|embed\/)|youtu\.be\/)([\w-]{11})/
+  );
+  return m ? m[1] : null;
+}
+
+function isYoutubeUrl(url) {
+  return /(?:^|\/\/)(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\//i.test(String(url || ""));
+}
+
+// YouTube's public web timedtext endpoint returns an EMPTY 200 without a
+// proof-of-origin token, so we go through the innertube player API with the
+// ANDROID client context instead — its caption URLs work with a plain GET.
+// (This uses YouTube's own embedded public endpoint; no user API key.)
+const YT_UA = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip";
+
+async function ytPlayer(videoId) {
+  const res = await fetch("https://www.youtube.com/youtubei/v1/player", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": YT_UA },
+    body: JSON.stringify({
+      context: {
+        client: { clientName: "ANDROID", clientVersion: "20.10.38", androidSdkVersion: 30, hl: "en" },
+      },
+      videoId,
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) throw new Error(`player API HTTP ${res.status}`);
+  return res.json();
+}
+
+// Caption bodies arrive as json3 events or timedtext XML depending on client.
+function parseCaptionBody(body, timestamps) {
+  const trimmed = String(body || "").trim();
+  const lines = [];
+  if (trimmed.startsWith("{")) {
+    let cap;
+    try { cap = JSON.parse(trimmed); } catch { return lines; }
+    for (const ev of cap.events || []) {
+      if (!ev.segs) continue;
+      const text = ev.segs.map((s) => s.utf8 || "").join("").replace(/\n/g, " ").trim();
+      if (!text) continue;
+      lines.push(timestamps ? `[${fmtTime(ev.tStartMs || 0)}] ${text}` : text);
+    }
+    return lines;
+  }
+  // <p t="1360" d="1680">text with optional <s> segments</p>
+  const re = /<p\b[^>]*\bt="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
+  let m;
+  while ((m = re.exec(trimmed)) !== null) {
+    const text = decodeEntities(m[2].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    lines.push(timestamps ? `[${fmtTime(Number(m[1]))}] ${text}` : text);
+  }
+  return lines;
+}
+
+function fmtTime(ms) {
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return h ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
+async function youtubeTranscript({ url, lang = "en", timestamps = true, max_chars = 20000 }) {
+  const videoId = extractVideoId(url);
+  if (!videoId) return "youtube_transcript error: could not find a video id in: " + url;
+
+  const player = await ytPlayer(videoId);
+  const playability = player.playabilityStatus || {};
+  if (playability.status && playability.status !== "OK") {
+    return `youtube_transcript error: video is ${playability.status}${playability.reason ? ` — ${playability.reason}` : ""}`;
+  }
+
+  const details = player.videoDetails || {};
+  const header = [
+    `Title: ${details.title || "(unknown)"}`,
+    `Channel: ${details.author || "(unknown)"}`,
+    `Length: ${details.lengthSeconds ? fmtTime(details.lengthSeconds * 1000) : "?"}  Views: ${details.viewCount || "?"}`,
+    `Video: https://youtu.be/${videoId}`,
+  ].join("\n");
+  const description = (details.shortDescription || "").trim().slice(0, 1500);
+
+  const tracks =
+    player.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+  if (!tracks.length) {
+    return `${header}\n\n(no captions available for this video — cannot extract a transcript)\n\nDescription:\n${description || "(none)"}`;
+  }
+
+  // Prefer an exact language match, then a manual (non auto-generated) track,
+  // then whatever exists. Auto-generated tracks have kind === "asr".
+  const want = String(lang).toLowerCase();
+  const track =
+    tracks.find((t) => t.languageCode?.toLowerCase() === want && t.kind !== "asr") ||
+    tracks.find((t) => t.languageCode?.toLowerCase().startsWith(want)) ||
+    tracks.find((t) => t.kind !== "asr") ||
+    tracks[0];
+
+  const capRes = await fetch(track.baseUrl + "&fmt=json3", {
+    headers: { "User-Agent": YT_UA },
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!capRes.ok) return `${header}\n\ncaption track fetch failed: HTTP ${capRes.status}`;
+  const lines = parseCaptionBody(await capRes.text(), timestamps);
+  if (!lines.length) return `${header}\n\n(caption track "${track.languageCode}" was empty)`;
+
+  let transcript = lines.join("\n");
+  const capLen = Math.max(2000, Math.min(Number(max_chars) || 20000, 60000));
+  if (transcript.length > capLen) transcript = transcript.slice(0, capLen) + "\n…[transcript truncated]";
+
+  const trackNote = `Transcript (${track.languageCode}${track.kind === "asr" ? ", auto-generated" : ""}, ${lines.length} lines):`;
+  return [header, "", `Description (first 1500 chars):\n${description || "(none)"}`, "", trackNote, transcript].join("\n");
+}
+
 function htmlToText(html) {
   return decodeEntities(
     html
@@ -109,12 +236,30 @@ export default {
       function: {
         name: "web_fetch",
         description:
-          "Fetch an http(s) URL and return its readable text content (HTML stripped). Use after web_search to read documentation or articles.",
+          "Fetch an http(s) URL and return its readable text content (HTML stripped). Use after web_search to read documentation or articles. YouTube URLs are automatically routed to youtube_transcript.",
         parameters: {
           type: "object",
           properties: {
             url: { type: "string", description: "Full http(s) URL to fetch" },
             max_chars: { type: "integer", description: "Max characters to return, default 15000" },
+          },
+          required: ["url"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "youtube_transcript",
+        description:
+          "Get a YouTube video's title, channel, description, and full timestamped transcript from its caption tracks (no API key, no external AI service). Use this to 'watch' a video: read the transcript, then summarize or extract what the user needs.",
+        parameters: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "YouTube URL (watch/shorts/youtu.be) or bare 11-char video id" },
+            lang: { type: "string", description: "Preferred caption language code, default 'en'" },
+            timestamps: { type: "boolean", description: "Prefix each line with [mm:ss], default true" },
+            max_chars: { type: "integer", description: "Max transcript characters, default 20000" },
           },
           required: ["url"],
         },
@@ -133,10 +278,22 @@ export default {
       }
     },
 
+    async youtube_transcript(args) {
+      try {
+        return await youtubeTranscript(args || {});
+      } catch (e) {
+        return "youtube_transcript error: " + (e.name === "TimeoutError" ? "request timed out (30s)" : e.message);
+      }
+    },
+
     async web_fetch({ url, max_chars = 15000 }) {
       try {
         if (!/^https?:\/\//i.test(String(url))) {
           return "web_fetch error: only http(s) URLs are supported";
+        }
+        // A YouTube page's HTML is useless as text — return the transcript instead.
+        if (isYoutubeUrl(url) && extractVideoId(url)) {
+          return await youtubeTranscript({ url, max_chars });
         }
         const res = await fetch(url, {
           headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,text/plain,*/*" },

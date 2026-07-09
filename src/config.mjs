@@ -32,6 +32,10 @@ const DEFAULT_SETTINGS = {
   reasoning: "medium",
   maxToolIterations: 30,
   diffPreview: true,
+  // Per-tool permission states: "allow" (silent), "deny" (blocked with an
+  // error), or "ask" (interactive confirmation). "*" sets the default for
+  // tools not listed. Manage from the REPL with /perm.
+  permissions: {},
   providers: {
     openai: {
       baseUrl: "https://api.openai.com/v1",
@@ -246,8 +250,9 @@ export async function loadSettings() {
     const settings = {
       ...DEFAULT_SETTINGS,
       ...saved,
-      providers: mergeProviders(saved.providers),
-      models:    { ...DEFAULT_SETTINGS.models,    ...(saved.models    || {}) },
+      providers:   mergeProviders(saved.providers),
+      models:      { ...DEFAULT_SETTINGS.models, ...(saved.models || {}) },
+      permissions: { ...(saved.permissions || {}) },
     };
     migrateSettings(settings);
     applyEnvKeyOverrides(settings);

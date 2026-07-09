@@ -5,7 +5,7 @@ import readline from "node:readline";
 import { loadSettings, saveSettings, resolveModel, Session, SETTINGS_PATH, HOME, providerKeyMissing, providerKeyEnvVar } from "../src/config.mjs";
 import { listProviderModels, probeModel } from "../src/provider.mjs";
 import { systemPrompt, runTurn } from "../src/agent.mjs";
-import { registerExtensions } from "../src/tools.mjs";
+import { registerExtensions, memoryPreamble } from "../src/tools.mjs";
 import { loadProjectConfig, loadSkills, buildSystemPrompt, INSTALL_ROOT, loadMcpConfig } from "../src/extras.mjs";
 import { banner, c, errorLine, infoLine, warnLine, costLine, shutdown, promptTop, promptBottom, statusBar, setPersonaIndicator } from "../src/ui.mjs";
 import { installPackage, uninstallPackage, listInstalled, searchRegistry, DEFAULT_REGISTRY } from "../src/registry.mjs";
@@ -509,7 +509,7 @@ try {
 }
 
 const session = new Session();
-const messages = [{ role: "system", content: buildSystemPrompt(project, skills) }];
+const messages = [{ role: "system", content: buildSystemPrompt(project, skills) + memoryPreamble() }];
 const maxIterations = settings.maxToolIterations || 30;
 
 // One-shot mode: `NimAgent "do this"` or `NimAgent /doctor <path>` runs once and exits.
@@ -534,7 +534,7 @@ if (promptArg) {
       await shutdown(1);
     }
     currentAbort = new AbortController();
-    await runTurn({ model, messages, session, maxIterations, persona: activePersona, signal: currentAbort.signal });
+    await runTurn({ model, messages, session, maxIterations, persona: activePersona, signal: currentAbort.signal, permissions: settings.permissions });
     currentAbort = null;
     costLine(session);
     await shutdown(0);
@@ -600,6 +600,18 @@ if (canRaw) {
 const startInterruptWatch = () => { if (canRaw) { process.stdin.setRawMode(true); process.stdin.resume(); } };
 const stopInterruptWatch  = () => { if (canRaw) { process.stdin.setRawMode(false); } };
 
+// Permission "ask" confirmation: temporarily hand the terminal back to
+// readline mid-turn, ask, then restore the generation interrupt watch.
+async function confirmToolUse(name, summary) {
+  stopInterruptWatch();
+  rl.resume();
+  const q = c.yellow(`  allow ${name}${summary ? ` (${String(summary).slice(0, 80)})` : ""}? [y/N/a=always] `);
+  const answer = await new Promise((resolve) => rl.question(q, resolve));
+  rl.pause();
+  startInterruptWatch();
+  return answer;
+}
+
 // Multi-line support: lines ending with \ continue input
 let multiLine = "";
 
@@ -624,6 +636,7 @@ function help() {
       "    /llama stop | status          stop / show the local llama server",
       "    /apikey <provider> [key]      show or set a provider API key (persisted)",
       "    /addprovider <name> <url> [key]           add a provider (persisted)",
+      "    /perm [tool state]            list or set tool permissions (allow, deny, ask)",
       "    /clear                        reset the conversation",
       "    /cwd                          show working directory",
       "    /config                       show config file path",
@@ -854,7 +867,7 @@ rl.on("line", async (input) => {
       rl.pause();
       startInterruptWatch();
       currentAbort = new AbortController();
-      await runTurn({ model, messages, session, maxIterations, diffPreview, persona: activePersona, signal: currentAbort.signal });
+      await runTurn({ model, messages, session, maxIterations, diffPreview, persona: activePersona, signal: currentAbort.signal, permissions: settings.permissions, confirmTool: confirmToolUse });
       currentAbort = null;
       stopInterruptWatch();
       console.log("");
@@ -876,6 +889,29 @@ rl.on("line", async (input) => {
           console.log("");
         }
         break;
+      case "/perm":
+      case "/permissions": {
+        const [toolName, state] = arg.trim().split(/\s+/).filter(Boolean);
+        const valid = ["allow", "deny", "ask"];
+        if (!toolName) {
+          const entries = Object.entries(settings.permissions || {});
+          infoLine("permission states: allow (silent), deny (blocked), ask (confirm). Default: allow");
+          if (!entries.length) infoLine("no per-tool overrides set — everything is allowed. Set one: /perm <tool|*> <allow|deny|ask>");
+          for (const [t, st] of entries) console.log(`    ${t.padEnd(20)} ${st}`);
+        } else if (state && valid.includes(state)) {
+          settings.permissions = settings.permissions || {};
+          settings.permissions[toolName] = state;
+          await saveSettings(settings);
+          infoLine(`permission saved: ${toolName} -> ${state}`);
+        } else if (toolName && state === "clear") {
+          if (settings.permissions) delete settings.permissions[toolName];
+          await saveSettings(settings);
+          infoLine(`permission override removed for ${toolName}`);
+        } else {
+          errorLine("usage: /perm            (list)  |  /perm <tool|*> <allow|deny|ask>  |  /perm <tool> clear");
+        }
+        break;
+      }
       case "/clear":
         messages.length = 1; // keep system prompt
         session.resetCost();
@@ -1305,7 +1341,7 @@ rl.on("line", async (input) => {
     return showPrompt();
   }
   currentAbort = new AbortController();
-  await runTurn({ model, messages, session, maxIterations, diffPreview, persona: activePersona, signal: currentAbort.signal });
+  await runTurn({ model, messages, session, maxIterations, diffPreview, persona: activePersona, signal: currentAbort.signal, permissions: settings.permissions, confirmTool: confirmToolUse });
   currentAbort = null;
   stopInterruptWatch();
   console.log("");

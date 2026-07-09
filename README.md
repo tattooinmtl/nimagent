@@ -1,4 +1,6 @@
-# NimAgent
+# NimAgent V2
+
+*Vice Summer Edition 2026*
 
 A from-scratch terminal coding agent in the style of `pi` / the Claude CLI.
 Talks to **OpenAI-compatible** providers (NVIDIA NIM, local llama.cpp, Ollama,
@@ -80,8 +82,31 @@ broken PATH entries, in a few seconds), and `where_is` (locate any executable
 on PATH). Use these to tell a code bug from a dependency/PATH problem.
 
 Via bundled extensions: `move_file`, `copy_file`, `delete_path`, `make_dir`
-(file-tools), plus `web_search` (DuckDuckGo — no API key or service account)
-and `web_fetch` (read any http(s) page as plain text).
+(file-tools), plus `web_search` (DuckDuckGo — no API key or service account),
+`web_fetch` (read any http(s) page as plain text), and `youtube_transcript`
+(title, channel, description, and full timestamped transcript from a video's
+caption tracks — no API key, no external AI service; the agent "watches" a
+video by reading its transcript and summarizing it. YouTube URLs passed to
+`web_fetch` route here automatically).
+
+Persistent memory: `memory_save`, `memory_search`, `memory_list`,
+`memory_forget` — durable facts stored in `<home>/memory.jsonl` that survive
+across sessions and projects; recent memories are injected into the system
+prompt at startup.
+
+### Tool permissions
+
+Each tool can be set to one of three states in `settings.json` (`permissions`
+block) or from the REPL with `/perm <tool|*> <allow|deny|ask>`:
+
+| State | Behavior |
+|-------|----------|
+| `allow` | Permits the action silently (default) |
+| `deny`  | Blocks the action with an error message the model sees |
+| `ask`   | Prompts you for confirmation (`y` / `N` / `a` = always this session) |
+
+`*` sets the default for unlisted tools. In one-shot (non-interactive) mode,
+`ask` behaves as `deny`.
 
 ### Robust tool calling on any provider
 

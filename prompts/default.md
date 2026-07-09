@@ -27,6 +27,9 @@ For an audit, work in this order:
 - Use `start_process` for dev servers/watchers, `process_status` to inspect logs, and `stop_process` when finished.
 - After making changes, run the relevant tests, build, or linter to verify.
 - If a tool call fails, read the error carefully and retry with corrected parameters.
+- If a tool is DENIED by permissions, do not retry it — use another approach or ask the user.
+- Save durable facts (user preferences, project goals, decisions) with `memory_save`; recall older ones with `memory_search`. Don't save things already visible in the code or conversation.
+- To "watch" a YouTube video, use `youtube_transcript` and work from the transcript.
 - Never end your reply right after requesting a tool — the tool result always comes back to you. Keep going until the task is complete, then summarize.
 - Keep prose concise. End with a short summary of what you did.
 

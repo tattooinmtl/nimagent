@@ -9,6 +9,7 @@ import { createInterface } from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { rgPath, fdPath, jqPath, INSTALL_ROOT } from "./paths.mjs";
+import { HOME } from "./config.mjs";
 
 const MAX_OUTPUT = 30000;
 const PROCESS_LOG_LIMIT = 20000;
@@ -428,6 +429,64 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "memory_save",
+      description:
+        "Save a durable fact to persistent memory (survives across sessions and projects). Use for user preferences, project goals, decisions, and lessons learned — not for things already in the code or this conversation.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "The fact to remember, written so it makes sense out of context" },
+          tags: { type: "array", items: { type: "string" }, description: "Optional topic tags, e.g. ['preferences','nimagent']" },
+        },
+        required: ["text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_search",
+      description: "Search persistent memory by keywords. Returns the best-matching saved facts with their ids.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Keywords to search for" },
+          limit: { type: "integer", description: "Max results, default 8" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_list",
+      description: "List the most recent persistent memories.",
+      parameters: {
+        type: "object",
+        properties: {
+          limit: { type: "integer", description: "Max entries, default 20" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_forget",
+      description: "Delete a persistent memory by its id (use when a saved fact is wrong or obsolete).",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Memory id, e.g. 'm1a2b3c4'" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "system_info",
       description:
         "Report the user's machine: OS version, CPU, RAM, GPU, disks, hostname, Node version, shell, cwd. Use when diagnosing environment-dependent problems.",
@@ -759,6 +818,51 @@ export const impl = {
   stop_process({ id }) {
     return stopManagedProcess(id);
   },
+  memory_save({ text, tags = [] }) {
+    if (!text || !String(text).trim()) throw new Error("text is required");
+    const rec = {
+      id: "m" + Date.now().toString(36) + Math.floor(Math.random() * 100),
+      text: String(text).trim(),
+      tags: Array.isArray(tags) ? tags.map(String) : [],
+      createdAt: new Date().toISOString(),
+    };
+    fs.mkdirSync(path.dirname(memoryFile()), { recursive: true });
+    fs.appendFileSync(memoryFile(), JSON.stringify(rec) + "\n");
+    return `Saved memory ${rec.id}: ${rec.text.slice(0, 120)}`;
+  },
+
+  memory_search({ query, limit = 8 }) {
+    if (!query || !String(query).trim()) throw new Error("query is required");
+    const terms = String(query).toLowerCase().split(/\s+/).filter(Boolean);
+    const scored = readMemories()
+      .map((m) => {
+        const hay = (m.text + " " + (m.tags || []).join(" ")).toLowerCase();
+        const score = terms.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
+        return { m, score };
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score || (a.m.createdAt < b.m.createdAt ? 1 : -1))
+      .slice(0, Math.max(1, Math.min(Number(limit) || 8, 50)));
+    if (!scored.length) return `(no memories matched "${query}")`;
+    return clip(scored.map(({ m }) => formatMemory(m)).join("\n"));
+  },
+
+  memory_list({ limit = 20 } = {}) {
+    const all = readMemories();
+    if (!all.length) return "(no memories saved yet)";
+    const recent = all.slice(-Math.max(1, Math.min(Number(limit) || 20, 100))).reverse();
+    return clip(`${all.length} memories total, most recent first:\n` + recent.map(formatMemory).join("\n"));
+  },
+
+  memory_forget({ id }) {
+    if (!id) throw new Error("id is required");
+    const all = readMemories();
+    const kept = all.filter((m) => m.id !== id);
+    if (kept.length === all.length) throw new Error(`memory not found: ${id}`);
+    fs.writeFileSync(memoryFile(), kept.map((m) => JSON.stringify(m)).join("\n") + (kept.length ? "\n" : ""));
+    return `Forgot memory ${id}`;
+  },
+
   system_info() {
     return systemInfo();
   },
@@ -1128,6 +1232,48 @@ export async function runTool(name, args) {
     throw new Error(`Unknown tool: ${name}. Valid tools: ${Object.keys(impl).sort().join(", ")}`);
   }
   return await fn(args || {});
+}
+
+// ---------------------------------------------------------------------------
+// Persistent memory — one JSON record per line in <HOME>/memory.jsonl.
+// Survives across sessions and working directories.
+// ---------------------------------------------------------------------------
+
+function memoryFile() {
+  return path.join(HOME, "memory.jsonl");
+}
+
+function readMemories() {
+  try {
+    return fs
+      .readFileSync(memoryFile(), "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function formatMemory(m) {
+  const tags = m.tags?.length ? ` [${m.tags.join(", ")}]` : "";
+  return `- (${m.id}, ${String(m.createdAt).slice(0, 10)})${tags} ${m.text}`;
+}
+
+// Injected into the system prompt at startup so recent memories are always in
+// context. Returns "" when nothing is saved.
+export function memoryPreamble(limit = 15) {
+  const all = readMemories();
+  if (!all.length) return "";
+  const recent = all.slice(-limit).reverse();
+  return [
+    "",
+    "# Persistent memories",
+    `You have ${all.length} saved memories; the most recent are below. Use memory_search for older ones,`,
+    "memory_save to record new durable facts, and memory_forget to remove wrong/obsolete ones.",
+    ...recent.map(formatMemory),
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------------------
