@@ -37,6 +37,16 @@ const LOGO_AGENT = [
   "██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ",
   "╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ",
 ];
+const LOGO_SEP_V2 = ["   ", "   ", "   ", "   ", "   ", "   "];
+const LOGO_V2 = [
+  "██╗   ██╗██████╗ ",
+  "██║   ██║╚════██╗",
+  "██║   ██║ █████╔╝",
+  "╚██╗ ██╔╝██╔═══╝ ",
+  " ╚████╔╝ ███████╗",
+  "  ╚═══╝  ╚══════╝",
+];
+const LOGO_SUBTITLE = "vice summer edition 2026";
 
 // Row colors: rows 0-2 yellow (top half), rows 3-5 dark-orange -> purple.
 const LOGO_COLORS = [
@@ -54,12 +64,34 @@ function tc(rgb, s) {
   return `\x1b[38;2;${r};${g};${b}m${s}\x1b[0m`;
 }
 
+function gradientText(text, stops) {
+  if (!useColor || !text) return String(text || "");
+  if (!Array.isArray(stops) || stops.length === 0) return String(text);
+  if (text.length === 1 || stops.length === 1) return tc(stops[0], text);
+
+  const span = stops.length - 1;
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const t = i / (text.length - 1);
+    const scaled = t * span;
+    const a = Math.floor(scaled);
+    const b = Math.min(a + 1, span);
+    const localT = scaled - a;
+    const r = Math.round(stops[a][0] + (stops[b][0] - stops[a][0]) * localT);
+    const g = Math.round(stops[a][1] + (stops[b][1] - stops[a][1]) * localT);
+    const blue = Math.round(stops[a][2] + (stops[b][2] - stops[a][2]) * localT);
+    out += `\x1b[38;2;${r};${g};${blue}m${text[i]}`;
+  }
+  return out + "\x1b[0m";
+}
+
 export function banner(model) {
   console.log("");
   for (let i = 0; i < LOGO_NIM.length; i++) {
-    const row = LOGO_NIM[i] + LOGO_SEP[i] + LOGO_AGENT[i];
+    const row = LOGO_NIM[i] + LOGO_SEP[i] + LOGO_AGENT[i] + LOGO_SEP_V2[i] + LOGO_V2[i];
     console.log("  " + tc(LOGO_COLORS[i], row));
   }
+  console.log("  " + gradientText(LOGO_SUBTITLE, LOGO_COLORS));
   console.log("");
   console.log(`  ${c.dim("terminal coding agent")}   ${c.dim("model:")} ${c.cyan(model)}`);
   console.log(`  ${c.dim("type /help for commands, /exit to quit")}`);

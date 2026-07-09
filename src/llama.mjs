@@ -22,7 +22,7 @@ export function llamaConfig(settings) {
   return {
     binDir,
     exe: path.join(binDir, "llama-server.exe"),
-    modelsDir: cfg.modelsDir || "C:\\models",
+    modelsDir: cfg.modelsDir || path.join(INSTALL_ROOT, "models"),
     host: cfg.host || "127.0.0.1",
     port: cfg.port || 8080,
     // contextSize 0 or "auto" => read the model's trained context from the GGUF.

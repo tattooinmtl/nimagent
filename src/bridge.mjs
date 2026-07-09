@@ -22,6 +22,8 @@ import { createInterface } from "node:readline";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tools, impl } from "./tools.mjs";
+import { INSTALL_ROOT } from "./paths.mjs";
+import { loadProjectConfig } from "./extras.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_SCRIPT = path.join(__dirname, "..", "router", "bridge_server.py");
