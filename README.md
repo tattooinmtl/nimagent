@@ -72,11 +72,12 @@ Project & git: `project_inspect` (stack detection), `project_todo`,
 `git_status`, `git_diff`, `git_commit`, `create_markdown_report`.
 
 System diagnostics: `system_info` (OS build, CPU, RAM, GPU, disks),
-`dev_env_report` (probes installed toolchains — node, npm, python, pip, php,
-rust, cargo, perl, ruby, go, java, dotnet, gcc, g++, clang, cmake, make, git,
-docker, wsl, … — reporting version + PATH location, flagging missing tools and
-broken PATH entries), and `where_is` (locate any executable on PATH). Use these
-to tell a code bug from a dependency/PATH problem.
+`dev_env_report` (probes ~85 toolchains in parallel across 16 categories —
+JS/TS, Python, PHP, Ruby, Rust, Go, JVM, .NET/C#, C/C++, Perl, other
+languages, shells/WSL, version control, containers, databases, utilities —
+reporting version + PATH location, flagging missing tools per category and
+broken PATH entries, in a few seconds), and `where_is` (locate any executable
+on PATH). Use these to tell a code bug from a dependency/PATH problem.
 
 Via bundled extensions: `move_file`, `copy_file`, `delete_path`, `make_dir`
 (file-tools), plus `web_search` (DuckDuckGo — no API key or service account)

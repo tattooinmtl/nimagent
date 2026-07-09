@@ -439,7 +439,7 @@ export const tools = [
     function: {
       name: "dev_env_report",
       description:
-        "Probe installed developer toolchains (node, npm, python, pip, php, rust, cargo, perl, ruby, go, java, dotnet, gcc, g++, clang, cmake, make, git, docker, wsl, …). Reports version and resolved PATH location for each, flags missing ones, and lists broken PATH entries. Use this FIRST when a problem might be a missing dependency or PATH issue.",
+        "Probe ~85 developer toolchains in parallel across 16 categories (JS/TS, Python, PHP, Ruby, Rust, Go, JVM, .NET/C#, C/C++, Perl, other languages, shells/WSL, version control, containers, databases, utilities). Reports version and resolved PATH location for each, flags missing ones per category, and lists broken PATH entries. Use this FIRST when a problem might be a missing dependency or PATH issue.",
       parameters: {
         type: "object",
         properties: {
@@ -1173,62 +1173,117 @@ function systemInfo() {
   return clip(lines.join("\n"));
 }
 
-// name -> version args; null means "resolve path only, skip version probe".
-const TOOLCHAIN_PROBES = {
-  node: "--version", npm: "--version", pnpm: "--version", yarn: "--version",
-  bun: "--version", deno: "--version", tsc: "--version",
-  python: "--version", py: "--version", pip: "--version",
-  php: "-v", composer: "--version",
-  rustc: "--version", cargo: "--version",
-  perl: "-v", ruby: "--version", gem: "--version",
-  go: "version", java: "-version", javac: "-version", dotnet: "--version",
-  gcc: "--version", "g++": "--version", clang: "--version",
-  cmake: "--version", make: "--version",
-  git: "--version", docker: "--version", wsl: "--status",
-  pwsh: "--version", code: "--version",
-};
+// Comprehensive toolchain matrix, grouped by category. Value is the version
+// argument; null means "detect presence only" (the version command is too slow
+// or unreliable to run — e.g. flutter/gradle/sbt boot a VM).
+const TOOLCHAINS = [
+  ["JavaScript / TypeScript", { node: "--version", npm: "--version", pnpm: "--version", yarn: "--version", bun: "--version", deno: "--version", tsc: "--version", nvm: "version" }],
+  ["Python", { python: "--version", py: "--version", pip: "--version", pipx: "--version", poetry: "--version", uv: "--version", conda: "--version" }],
+  ["PHP", { php: "-v", composer: "--version" }],
+  ["Ruby", { ruby: "--version", gem: "--version", bundle: "--version", rails: null }],
+  ["Rust", { rustc: "--version", cargo: "--version", rustup: "--version" }],
+  ["Go", { go: "version", gofmt: null }],
+  ["JVM (Java/Kotlin/Scala)", { java: "-version", javac: "-version", mvn: "--version", gradle: null, kotlin: null, kotlinc: null, scala: null, sbt: null }],
+  [".NET / C#", { dotnet: "--version", msbuild: "-version", nuget: null }],
+  ["C / C++", { gcc: "--version", "g++": "--version", clang: "--version", "clang++": "--version", cl: null, cmake: "--version", make: "--version", ninja: "--version", gdb: "--version", vcpkg: null, conan: "--version" }],
+  ["Perl", { perl: "-v", cpan: null }],
+  ["Other languages", { lua: "-v", julia: "--version", dart: "--version", flutter: null, swift: null, zig: "version", nim: "--version", elixir: null, erl: null, ghc: "--version", Rscript: "--version" }],
+  ["Shells & OS", { pwsh: "--version", powershell: null, bash: "--version", wsl: "--status", ssh: "-V" }],
+  ["Version control", { git: "--version", gh: "--version", svn: "--version" }],
+  ["Containers & infra", { docker: "--version", "docker-compose": "--version", podman: "--version", kubectl: null, helm: null, terraform: null }],
+  ["Databases", { mysql: "--version", psql: "--version", sqlite3: "--version", mongosh: null, "redis-cli": "--version" }],
+  ["Utilities", { curl: "--version", wget: "--version", tar: "--version", jq: "--version", code: null }],
+];
 
-function resolveOnPath(name) {
-  const isWin = process.platform === "win32";
-  const r = spawnSync(isWin ? "where.exe" : "which", isWin ? [name] : ["-a", name], {
-    encoding: "utf8",
-    timeout: 8000,
-    windowsHide: true,
+// Run a shell command, capture stdout+stderr, resolve "" on error/timeout.
+// shell:true so Windows .cmd/.bat shims (npm, tsc, ...) resolve via PATHEXT.
+function runQuiet(cmd, timeout = 5000) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd, [], { shell: true, windowsHide: true });
+    } catch {
+      return resolve("");
+    }
+    let out = "";
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, timeout);
+    child.stdout.on("data", (d) => { if (out.length < 8192) out += d; });
+    child.stderr.on("data", (d) => { if (out.length < 8192) out += d; });
+    child.on("error", () => { clearTimeout(timer); resolve(""); });
+    child.on("close", () => { clearTimeout(timer); resolve(out); });
   });
-  if (r.error || r.status !== 0) return [];
-  return (r.stdout || "").replace(/\u0000/g, "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 }
 
-function probeVersion(name, versionArg) {
-  // shell:true so Windows .cmd/.bat shims (npm, tsc, …) resolve via PATHEXT.
-  const r = spawnSync(`${name} ${versionArg}`, [], {
-    shell: true,
-    encoding: "utf8",
-    timeout: 10000,
-    windowsHide: true,
-  });
-  if (r.error) return "";
-  // java/perl print the version to stderr; wsl outputs UTF-16 (strip NULs).
-  const out = `${r.stdout || ""}\n${r.stderr || ""}`.replace(/\u0000/g, "");
+async function resolveOnPath(name) {
+  const isWin = process.platform === "win32";
+  const out = await runQuiet(isWin ? `where.exe ${name}` : `which -a ${name}`, 8000);
+  // wsl and friends can emit UTF-16 (strip NULs); keep only path-shaped lines.
+  return out
+    .replace(/\u0000/g, "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => /^([A-Za-z]:[\\/]|\/)/.test(s));
+}
+
+async function probeVersion(name, versionArg) {
+  // java/perl/ssh print the version to stderr; strip UTF-16 NULs (wsl).
+  const out = (await runQuiet(`${name} ${versionArg}`, 5000)).replace(/\u0000/g, "");
   const first = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0] || "";
   return first.slice(0, 100);
 }
 
-function devEnvReport(subset) {
-  const names = Array.isArray(subset) && subset.length
-    ? subset.map(String)
-    : Object.keys(TOOLCHAIN_PROBES);
-  const found = [];
-  const missing = [];
-  for (const name of names) {
-    const paths = resolveOnPath(name);
-    if (!paths.length) {
-      missing.push(name);
-      continue;
+// Run fn over items with bounded concurrency (order-preserving results).
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const idx = next++;
+      results[idx] = await fn(items[idx]);
     }
-    const versionArg = TOOLCHAIN_PROBES[name] ?? "--version";
-    const version = probeVersion(name, versionArg);
-    found.push(`${name.padEnd(10)} ${version || "(installed, version unknown)"}\n${"".padEnd(11)}@ ${paths[0]}${paths.length > 1 ? ` (+${paths.length - 1} more on PATH)` : ""}`);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+async function devEnvReport(subset) {
+  // Flatten the matrix; unknown names from an explicit subset still get probed.
+  const wanted = Array.isArray(subset) && subset.length ? new Set(subset.map(String)) : null;
+  const probes = [];
+  for (const [cat, items] of TOOLCHAINS) {
+    for (const [name, versionArg] of Object.entries(items)) {
+      if (!wanted || wanted.has(name)) probes.push({ cat, name, versionArg });
+    }
+  }
+  if (wanted) {
+    for (const name of wanted) {
+      if (!probes.some((p) => p.name === name)) probes.push({ cat: "Requested", name, versionArg: "--version" });
+    }
+  }
+
+  const results = await mapLimit(probes, 10, async (p) => {
+    const paths = await resolveOnPath(p.name);
+    if (!paths.length) return { ...p, found: false };
+    const version = p.versionArg == null ? "" : await probeVersion(p.name, p.versionArg);
+    return { ...p, found: true, paths, version };
+  });
+
+  const categories = [...TOOLCHAINS.map(([cat]) => cat), "Requested"];
+  const lines = [];
+  let foundCount = 0;
+  for (const cat of categories) {
+    const group = results.filter((r) => r.cat === cat);
+    if (!group.length) continue;
+    const found = group.filter((r) => r.found);
+    const missing = group.filter((r) => !r.found).map((r) => r.name);
+    foundCount += found.length;
+    lines.push(`[${cat}]`);
+    for (const r of found) {
+      const extra = r.paths.length > 1 ? ` (+${r.paths.length - 1} more)` : "";
+      lines.push(`  ${r.name.padEnd(15)} ${(r.version || "(installed)").padEnd(42)} ${r.paths[0]}${extra}`);
+    }
+    if (missing.length) lines.push(`  missing: ${missing.join(", ")}`);
+    lines.push("");
   }
 
   // PATH health: flag entries pointing at directories that don't exist.
@@ -1236,20 +1291,17 @@ function devEnvReport(subset) {
   const broken = pathEntries.filter((p) => { try { return !fs.existsSync(p); } catch { return true; } });
 
   return clip([
-    `Developer environment (${found.length} found, ${missing.length} missing):`,
+    `Developer environment — ${foundCount} of ${probes.length} toolchains found`,
     "",
-    ...found,
-    "",
-    missing.length ? `NOT FOUND on PATH: ${missing.join(", ")}` : "All probed tools are present.",
-    "",
+    ...lines,
     `PATH entries: ${pathEntries.length}${broken.length ? ` — ${broken.length} point at missing directories:` : " (all directories exist)"}`,
     ...broken.map((p) => `  broken: ${p}`),
   ].join("\n"));
 }
 
-function whereIs(name) {
+async function whereIs(name) {
   if (!name || !String(name).trim()) throw new Error("name is required");
-  const paths = resolveOnPath(String(name).trim());
+  const paths = await resolveOnPath(String(name).trim());
   if (!paths.length) return `${name}: not found on PATH`;
   return clip(paths.join("\n"));
 }
