@@ -5,60 +5,26 @@ import { chatStream, completionStream } from "./provider.mjs";
 import { renderTemplate } from "./router.mjs";
 import { tools, runTool } from "./tools.mjs";
 import {
+  parseTextToolCalls, buildParamRegistry, hasToolIntent,
+  stripThink, stripToolCallText, textToolInstructions, recoveryMessage,
+} from "./toolcalls.mjs";
+import {
   c, assistantPrefix, toolLine, toolResultLine, errorLine, warnLine,
   startStatus, stopStatus, startGenerationStatus, diffPreviewLine,
   streamWrite, streamNewline
 } from "./ui.mjs";
 
-// Parse Qwythos <tool_call> XML blocks into OpenAI-format tool_calls.
-// Returns [] when the response contains no tool invocations.
-function parseQwythosToolCalls(content) {
-  const calls = [];
-  const toolRe = /<tool_call>\s*<function=([^\n>]+)>([\s\S]*?)<\/function>\s*<\/tool_call>/g;
-  let m;
-  while ((m = toolRe.exec(content)) !== null) {
-    const name = m[1].trim();
-    const body = m[2];
-    const args = {};
-    const paramRe = /<parameter=([^\n>]+)>([\s\S]*?)<\/parameter>/g;
-    let pm;
-    while ((pm = paramRe.exec(body)) !== null) {
-      const k = pm[1].trim();
-      let v = pm[2].trim();
-      try { v = JSON.parse(v); } catch { /* keep as string */ }
-      args[k] = v;
-    }
-    calls.push({
-      id: `qwy_${Date.now()}_${calls.length}`,
-      type: "function",
-      function: { name, arguments: JSON.stringify(args) },
-    });
-  }
-  return calls;
-}
-
-function textToolInstructions() {
-  const defs = tools.map((t) => {
-    const fn = t.function || {};
-    return {
-      name: fn.name,
-      description: fn.description,
-      parameters: fn.parameters || { type: "object", properties: {} },
-    };
-  });
-  return [
-    "",
-    "# Tool Calling Protocol",
-    "This provider does not support native OpenAI tool calls. When you need a tool, output only XML in this exact shape:",
-    "<tool_call>",
-    "<function=tool_name>",
-    "<parameter=argument_name>JSON_VALUE_OR_STRING</parameter>",
-    "</function>",
-    "</tool_call>",
-    "Do not explain the tool call. After the tool result is returned, continue normally.",
-    "Available tools:",
-    JSON.stringify(defs),
-  ].join("\n");
+// Re-serialize past assistant tool calls in the EXACT format the protocol
+// instructions demand, so the model's own history reinforces the right shape
+// instead of teaching it a divergent one.
+function serializeToolCall(call) {
+  const fn = call.function || {};
+  let argsObj = {};
+  try { argsObj = JSON.parse(fn.arguments || "{}"); } catch { /* leave empty */ }
+  const params = Object.entries(argsObj)
+    .map(([k, v]) => `<parameter=${k}>${typeof v === "string" ? v : JSON.stringify(v)}</parameter>`)
+    .join("\n");
+  return `<tool_call>\n<function=${fn.name || ""}>\n${params}\n</function>\n</tool_call>`;
 }
 
 function messagesWithTextTools(messages) {
@@ -68,20 +34,18 @@ function messagesWithTextTools(messages) {
       return { role: "user", content: `Tool result${name}:\n${m.content || ""}` };
     }
     if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
-      const calls = m.tool_calls.map((call) => {
-        const fn = call.function || {};
-        return `<tool_call>\n<function=${fn.name || ""}>\n${fn.arguments || "{}"}\n</function>\n</tool_call>`;
-      }).join("\n");
+      const calls = m.tool_calls.map(serializeToolCall).join("\n");
       return { role: "assistant", content: [m.content, calls].filter(Boolean).join("\n") };
     }
     return m;
   });
 
+  const instructions = textToolInstructions(tools);
   if (!normalized.length || normalized[0].role !== "system") {
-    return [{ role: "system", content: textToolInstructions() }, ...normalized];
+    return [{ role: "system", content: instructions }, ...normalized];
   }
   return [
-    { ...normalized[0], content: normalized[0].content + "\n" + textToolInstructions() },
+    { ...normalized[0], content: normalized[0].content + "\n" + instructions },
     ...normalized.slice(1),
   ];
 }
@@ -162,6 +126,8 @@ export function systemPrompt() {
     "- Keep prose concise. After finishing, briefly summarize what you did.",
     "- If a tool call fails, read the error carefully and retry with corrected parameters.",
     "- For multi-file changes, make them one at a time and verify each step.",
+    "- When a problem could be environmental (missing runtime, wrong version, PATH issue), diagnose with system_info, dev_env_report, and where_is before guessing.",
+    "- Never end your reply right after requesting a tool — the tool result always comes back to you; keep working until the task is done, then summarize.",
   ].join("\n");
 }
 
@@ -179,6 +145,12 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
   const useTemplate = Boolean(model.chatTemplate);
   const useNativeTools = model.nativeTools !== false;
   const useTextTools = !useNativeTools;
+
+  // Schema registry for the tolerant text-tool parser, and a budget of
+  // corrective retries when the model emits a malformed/truncated tool call.
+  const paramRegistry = buildParamRegistry(tools);
+  const MAX_PARSE_RECOVERIES = 3;
+  let parseRecoveries = 0;
 
   for (let i = 0; i < maxIterations; i++) {
     let resp;
@@ -248,12 +220,18 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
 
     const msg = resp.message;
 
-    // Template/text-tool paths: parse <tool_call> XML into OpenAI tool_calls, strip XML from content.
+    // Template/text-tool paths: parse tool-call text (canonical XML, GLM
+    // arg_key/arg_value, Qwen JSON, hybrid/unclosed forms) into OpenAI
+    // tool_calls, then strip the tool syntax + <think> blocks from content.
+    let rawContent = "";
     if ((useTemplate || useTextTools) && msg.content) {
-      const toolCalls = parseQwythosToolCalls(msg.content);
+      rawContent = stripThink(msg.content);
+      const toolCalls = parseTextToolCalls(rawContent, paramRegistry);
       if (toolCalls.length) {
         msg.tool_calls = toolCalls;
-        msg.content = msg.content.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim();
+        msg.content = stripToolCallText(rawContent).trim();
+      } else {
+        msg.content = rawContent.trim();
       }
     }
 
@@ -270,7 +248,25 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
       console.log(msg.content.trim());
     }
 
-    if (calls.length === 0) return; // model is done
+    if (calls.length === 0) {
+      // The model tried to call a tool but the text couldn't be parsed, or the
+      // response was cut off mid-call by the token limit. Don't end the turn —
+      // tell the model what happened and let it re-emit the call.
+      const truncated = resp.finishReason === "length";
+      const attempted = (useTemplate || useTextTools) && hasToolIntent(rawContent);
+      if ((attempted || (truncated && useTextTools)) && parseRecoveries < MAX_PARSE_RECOVERIES) {
+        parseRecoveries++;
+        warnLine(
+          truncated
+            ? `response truncated by token limit — asking the model to re-emit (${parseRecoveries}/${MAX_PARSE_RECOVERIES})`
+            : `malformed tool call — asking the model to re-emit (${parseRecoveries}/${MAX_PARSE_RECOVERIES})`
+        );
+        messages.push({ role: "user", content: recoveryMessage() });
+        continue;
+      }
+      if (truncated) warnLine("response was truncated by the max_tokens limit");
+      return; // model is done
+    }
 
     // Print each tool call (and any edit diff) up front, then animate a single
     // action status (reading / searching / coding / running) while the whole
@@ -356,6 +352,16 @@ function argSummary(name, args) {
       return args.id || "";
     case "web_search":
       return args.query || "";
+    case "web_fetch":
+      return args.url || "";
+    case "system_info":
+      return "";
+    case "dev_env_report":
+      return Array.isArray(args.tools) && args.tools.length ? args.tools.join(", ") : "all toolchains";
+    case "where_is":
+      return args.name || "";
+    case "create_markdown_report":
+      return args.filename || "";
     case "move_file":
     case "copy_file":
       return args.from && args.to ? `${args.from} → ${args.to}` : "";

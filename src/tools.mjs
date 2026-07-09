@@ -2,6 +2,7 @@
 // File ops, shell, and code search — the core of a coding agent.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
@@ -424,6 +425,63 @@ export const tools = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "system_info",
+      description:
+        "Report the user's machine: OS version, CPU, RAM, GPU, disks, hostname, Node version, shell, cwd. Use when diagnosing environment-dependent problems.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "dev_env_report",
+      description:
+        "Probe installed developer toolchains (node, npm, python, pip, php, rust, cargo, perl, ruby, go, java, dotnet, gcc, g++, clang, cmake, make, git, docker, wsl, …). Reports version and resolved PATH location for each, flags missing ones, and lists broken PATH entries. Use this FIRST when a problem might be a missing dependency or PATH issue.",
+      parameters: {
+        type: "object",
+        properties: {
+          tools: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional subset of executables to probe (default: the full common toolchain list)",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "where_is",
+      description: "Locate an executable on PATH (like `where` on Windows / `which -a` on Unix). Returns every match or 'not found'.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Executable name, e.g. 'python' or 'cargo'" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_markdown_report",
+      description: "Create a markdown report file with a given title and content.",
+      parameters: {
+        type: "object",
+        properties: {
+          filename: { type: "string", description: "File name (e.g., Audit52.md)" },
+          title: { type: "string", description: "Title of the report" },
+          content: { type: "string", description: "Markdown content to write" },
+        },
+        required: ["filename", "title", "content"],
+      },
+    },
+  },
 ];
 
 export const impl = {
@@ -700,6 +758,27 @@ export const impl = {
 
   stop_process({ id }) {
     return stopManagedProcess(id);
+  },
+  system_info() {
+    return systemInfo();
+  },
+
+  dev_env_report({ tools: subset } = {}) {
+    return devEnvReport(subset);
+  },
+
+  where_is({ name }) {
+    return whereIs(name);
+  },
+
+  create_markdown_report({ filename, title, content }) {
+    const full = resolveForCreate(filename);
+    const markdown = `# ${title}
+
+${content}`;
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, markdown, 'utf8');
+    return `Created markdown report ${filename} with title "${title}"`;
   },
 };
 
@@ -1045,8 +1124,134 @@ function projectTodo({ action, id, title, status, notes } = {}) {
 
 export async function runTool(name, args) {
   const fn = impl[name];
-  if (!fn) throw new Error(`Unknown tool: ${name}`);
+  if (!fn) {
+    throw new Error(`Unknown tool: ${name}. Valid tools: ${Object.keys(impl).sort().join(", ")}`);
+  }
   return await fn(args || {});
+}
+
+// ---------------------------------------------------------------------------
+// System / environment diagnostics
+// ---------------------------------------------------------------------------
+
+function systemInfo() {
+  const gb = (b) => (b / 1024 ** 3).toFixed(1) + " GB";
+  const cpus = os.cpus();
+  const lines = [
+    `hostname: ${os.hostname()}`,
+    `platform: ${process.platform} ${os.release()} (${os.arch()})`,
+    `cpu: ${cpus[0]?.model?.trim() || "unknown"} × ${cpus.length} logical cores`,
+    `memory: ${gb(os.freemem())} free of ${gb(os.totalmem())}`,
+    `node: ${process.version}`,
+    `shell: ${process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/sh"}`,
+    `cwd: ${process.cwd()}`,
+    `home: ${os.homedir()}`,
+  ];
+  if (process.platform === "win32") {
+    const ps = [
+      "$o = Get-CimInstance Win32_OperatingSystem;",
+      "$g = (Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ', ';",
+      "$d = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { '{0} {1:N0} GB free of {2:N0} GB' -f $_.DeviceID, ($_.FreeSpace/1GB), ($_.Size/1GB) };",
+      "@{ os = ($o.Caption + ' build ' + $o.BuildNumber); gpu = $g; disks = @($d) } | ConvertTo-Json -Compress",
+    ].join(" ");
+    const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], {
+      encoding: "utf8",
+      timeout: 20000,
+      windowsHide: true,
+    });
+    try {
+      const info = JSON.parse(r.stdout);
+      lines.push(`os: ${info.os}`);
+      lines.push(`gpu: ${info.gpu || "unknown"}`);
+      const disks = Array.isArray(info.disks) ? info.disks : [info.disks].filter(Boolean);
+      lines.push(`disks: ${disks.join(" | ")}`);
+    } catch { lines.push("(detailed OS/GPU/disk info unavailable — CIM query failed)"); }
+  } else {
+    const r = spawnSync("uname", ["-a"], { encoding: "utf8", timeout: 5000 });
+    if (!r.error && r.stdout) lines.push(`uname: ${r.stdout.trim()}`);
+  }
+  return clip(lines.join("\n"));
+}
+
+// name -> version args; null means "resolve path only, skip version probe".
+const TOOLCHAIN_PROBES = {
+  node: "--version", npm: "--version", pnpm: "--version", yarn: "--version",
+  bun: "--version", deno: "--version", tsc: "--version",
+  python: "--version", py: "--version", pip: "--version",
+  php: "-v", composer: "--version",
+  rustc: "--version", cargo: "--version",
+  perl: "-v", ruby: "--version", gem: "--version",
+  go: "version", java: "-version", javac: "-version", dotnet: "--version",
+  gcc: "--version", "g++": "--version", clang: "--version",
+  cmake: "--version", make: "--version",
+  git: "--version", docker: "--version", wsl: "--status",
+  pwsh: "--version", code: "--version",
+};
+
+function resolveOnPath(name) {
+  const isWin = process.platform === "win32";
+  const r = spawnSync(isWin ? "where.exe" : "which", isWin ? [name] : ["-a", name], {
+    encoding: "utf8",
+    timeout: 8000,
+    windowsHide: true,
+  });
+  if (r.error || r.status !== 0) return [];
+  return (r.stdout || "").replace(/\u0000/g, "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+}
+
+function probeVersion(name, versionArg) {
+  // shell:true so Windows .cmd/.bat shims (npm, tsc, …) resolve via PATHEXT.
+  const r = spawnSync(`${name} ${versionArg}`, [], {
+    shell: true,
+    encoding: "utf8",
+    timeout: 10000,
+    windowsHide: true,
+  });
+  if (r.error) return "";
+  // java/perl print the version to stderr; wsl outputs UTF-16 (strip NULs).
+  const out = `${r.stdout || ""}\n${r.stderr || ""}`.replace(/\u0000/g, "");
+  const first = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0] || "";
+  return first.slice(0, 100);
+}
+
+function devEnvReport(subset) {
+  const names = Array.isArray(subset) && subset.length
+    ? subset.map(String)
+    : Object.keys(TOOLCHAIN_PROBES);
+  const found = [];
+  const missing = [];
+  for (const name of names) {
+    const paths = resolveOnPath(name);
+    if (!paths.length) {
+      missing.push(name);
+      continue;
+    }
+    const versionArg = TOOLCHAIN_PROBES[name] ?? "--version";
+    const version = probeVersion(name, versionArg);
+    found.push(`${name.padEnd(10)} ${version || "(installed, version unknown)"}\n${"".padEnd(11)}@ ${paths[0]}${paths.length > 1 ? ` (+${paths.length - 1} more on PATH)` : ""}`);
+  }
+
+  // PATH health: flag entries pointing at directories that don't exist.
+  const pathEntries = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const broken = pathEntries.filter((p) => { try { return !fs.existsSync(p); } catch { return true; } });
+
+  return clip([
+    `Developer environment (${found.length} found, ${missing.length} missing):`,
+    "",
+    ...found,
+    "",
+    missing.length ? `NOT FOUND on PATH: ${missing.join(", ")}` : "All probed tools are present.",
+    "",
+    `PATH entries: ${pathEntries.length}${broken.length ? ` — ${broken.length} point at missing directories:` : " (all directories exist)"}`,
+    ...broken.map((p) => `  broken: ${p}`),
+  ].join("\n"));
+}
+
+function whereIs(name) {
+  if (!name || !String(name).trim()) throw new Error("name is required");
+  const paths = resolveOnPath(String(name).trim());
+  if (!paths.length) return `${name}: not found on PATH`;
+  return clip(paths.join("\n"));
 }
 
 function searchFallback(pattern, searchPath, glob, caseInsensitive) {

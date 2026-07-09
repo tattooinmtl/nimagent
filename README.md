@@ -61,12 +61,38 @@ NimAgent --resume                 # resume last session
 End a line with `\` to continue on the next line.
 
 ## Tools the agent can use
-Core: `read_file`, `write_file`, `edit_file`, `list_dir` (with recursive option),
-`find_files` (fd), `search` (ripgrep), `jq_query` (jq), `run_shell` (PowerShell),
-`run_test`.
+Files & code: `read_file`, `read_many_files`, `write_file`, `edit_file`,
+`apply_patch` (multi-file patches), `list_dir` (with recursive option),
+`find_files` (fd), `search` (ripgrep), `jq_query` (jq).
+
+Shell & processes: `run_shell` (PowerShell), `run_test`, `start_process` /
+`process_status` / `stop_process` (dev servers & watchers).
+
+Project & git: `project_inspect` (stack detection), `project_todo`,
+`git_status`, `git_diff`, `git_commit`, `create_markdown_report`.
+
+System diagnostics: `system_info` (OS build, CPU, RAM, GPU, disks),
+`dev_env_report` (probes installed toolchains — node, npm, python, pip, php,
+rust, cargo, perl, ruby, go, java, dotnet, gcc, g++, clang, cmake, make, git,
+docker, wsl, … — reporting version + PATH location, flagging missing tools and
+broken PATH entries), and `where_is` (locate any executable on PATH). Use these
+to tell a code bug from a dependency/PATH problem.
 
 Via bundled extensions: `move_file`, `copy_file`, `delete_path`, `make_dir`
-(file-tools) and `web_search` (DuckDuckGo).
+(file-tools), plus `web_search` (DuckDuckGo — no API key or service account)
+and `web_fetch` (read any http(s) page as plain text).
+
+### Robust tool calling on any provider
+
+Providers without native OpenAI tool calling (e.g. NVIDIA NIM) use a text
+protocol: the model emits `<tool_call>` XML that NimAgent parses. The parser
+(`src/toolcalls.mjs`) is deliberately tolerant — it accepts the canonical
+format plus the formats models were actually trained on (GLM
+`<arg_key>/<arg_value>`, Qwen JSON-in-`<tool_call>`, bare `<function=…>`,
+unclosed envelopes, and hybrid mixes), with schema-aware argument coercion.
+If a tool call still can't be parsed (or the response is truncated by
+`max_tokens`), the agent tells the model what went wrong and lets it re-emit
+instead of silently ending the turn — up to 3 corrective retries.
 
 ## Config
 
@@ -123,8 +149,9 @@ All are MIT/Apache/permissively licensed; install the builds for your platform.
 .NimAgent/
   bin/nimagent.mjs     entry / REPL
   src/agent.mjs        tool-calling loop + system prompt
+  src/toolcalls.mjs    tolerant text-protocol tool-call parser + recovery
   src/provider.mjs     OpenAI-compatible client
-  src/tools.mjs        tool schemas + implementations
+  src/tools.mjs        tool schemas + implementations (incl. system diagnostics)
   src/config.mjs       settings + session logging + cost tracking
   src/ui.mjs           logo, colors, animated status states, token panel,
                        status bar, input frame, diff preview
