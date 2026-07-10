@@ -37,16 +37,16 @@ const LOGO_AGENT = [
   "██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ",
   "╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ",
 ];
-const LOGO_SEP_V2 = ["   ", "   ", "   ", "   ", "   ", "   "];
-const LOGO_V2 = [
-  "██╗   ██╗██████╗ ",
-  "██║   ██║╚════██╗",
-  "██║   ██║ █████╔╝",
-  "╚██╗ ██╔╝██╔═══╝ ",
-  " ╚████╔╝ ███████╗",
-  "  ╚═══╝  ╚══════╝",
+const LOGO_SEP_GM = ["   ", "   ", "   ", "   ", "   ", "   "];
+const LOGO_GM = [
+  " ██████╗ ███╗   ███╗",
+  "██╔════╝ ████╗ ████║",
+  "██║  ███╗██╔████╔██║",
+  "██║   ██║██║╚██╔╝██║",
+  "╚██████╔╝██║ ╚═╝ ██║",
+  " ╚═════╝ ╚═╝     ╚═╝",
 ];
-const LOGO_SUBTITLE = "vice summer edition 2026";
+const LOGO_SUBTITLE = "Game Maker Edition 2026";
 
 // Row colors: rows 0-2 yellow (top half), rows 3-5 dark-orange -> purple.
 const LOGO_COLORS = [
@@ -88,7 +88,7 @@ function gradientText(text, stops) {
 export function banner(model) {
   console.log("");
   for (let i = 0; i < LOGO_NIM.length; i++) {
-    const row = LOGO_NIM[i] + LOGO_SEP[i] + LOGO_AGENT[i] + LOGO_SEP_V2[i] + LOGO_V2[i];
+    const row = LOGO_NIM[i] + LOGO_SEP[i] + LOGO_AGENT[i] + LOGO_SEP_GM[i] + LOGO_GM[i];
     console.log("  " + tc(LOGO_COLORS[i], row));
   }
   console.log("  " + gradientText(LOGO_SUBTITLE, LOGO_COLORS));

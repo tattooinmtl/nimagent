@@ -4,10 +4,29 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const INSTALL_ROOT = path.resolve(__dirname, "..");
+const PROJECTS_ROOT = path.join(INSTALL_ROOT, "NimProjects");
 
 function resolve(p) {
   const root = path.resolve(process.cwd());
   const full = path.resolve(root, p);
+  const rel = path.relative(root, full);
+  if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return full;
+  throw new Error(`path escapes workspace: ${rel || full}`);
+}
+
+function resolveForProjectCreate(p) {
+  if (!p || String(p).trim() === "") throw new Error("path is required");
+  const raw = String(p);
+  const full = path.isAbsolute(raw)
+    ? path.resolve(raw)
+    : path.resolve(PROJECTS_ROOT, raw);
+  const projectRel = path.relative(PROJECTS_ROOT, full);
+  if (projectRel === "" || (!projectRel.startsWith("..") && !path.isAbsolute(projectRel))) return full;
+  const root = path.resolve(process.cwd());
   const rel = path.relative(root, full);
   if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return full;
   throw new Error(`path escapes workspace: ${rel || full}`);
@@ -67,22 +86,25 @@ export default {
   ],
   impl: {
     move_file({ from, to }) {
-      fs.mkdirSync(path.dirname(resolve(to)), { recursive: true });
-      fs.renameSync(resolve(from), resolve(to));
-      return `Moved ${from} -> ${to}`;
+      const target = resolveForProjectCreate(to);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.renameSync(resolve(from), target);
+      return `Moved ${from} -> ${path.relative(process.cwd(), target)}`;
     },
     copy_file({ from, to }) {
-      fs.mkdirSync(path.dirname(resolve(to)), { recursive: true });
-      fs.cpSync(resolve(from), resolve(to), { recursive: true });
-      return `Copied ${from} -> ${to}`;
+      const target = resolveForProjectCreate(to);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.cpSync(resolve(from), target, { recursive: true });
+      return `Copied ${from} -> ${path.relative(process.cwd(), target)}`;
     },
     delete_path({ path: p }) {
       fs.rmSync(resolve(p), { recursive: true, force: true });
       return `Deleted ${p}`;
     },
     make_dir({ path: p }) {
-      fs.mkdirSync(resolve(p), { recursive: true });
-      return `Created directory ${p}`;
+      const target = resolveForProjectCreate(p);
+      fs.mkdirSync(target, { recursive: true });
+      return `Created directory ${path.relative(process.cwd(), target)}`;
     },
   },
 };

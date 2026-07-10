@@ -106,6 +106,7 @@ const DEFAULT_SETTINGS = {
       apiKey: "not-needed", // local llama.cpp server needs no key
       label: "Local llama.cpp",
       reasoningParam: "none",
+      nativeTools: false,
     },
     gwn: {
       baseUrl: "http://173.212.202.219:8000/v1",

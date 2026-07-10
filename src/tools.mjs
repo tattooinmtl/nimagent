@@ -25,11 +25,19 @@ function workspaceRoot() {
   return path.resolve(process.cwd());
 }
 
+const PROJECTS_ROOT = path.join(INSTALL_ROOT, "NimProjects");
+
 function assertInsideWorkspace(full, label = "path") {
   const root = workspaceRoot();
   const rel = path.relative(root, full);
   if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return full;
   throw new Error(`${label} escapes workspace: ${path.relative(root, full) || full}`);
+}
+
+function assertInsideWorkspaceOrProjects(full, label = "path") {
+  const projectsRel = path.relative(PROJECTS_ROOT, full);
+  if (projectsRel === "" || (!projectsRel.startsWith("..") && !path.isAbsolute(projectsRel))) return full;
+  return assertInsideWorkspace(full, label);
 }
 
 function resolve(p = ".") {
@@ -38,6 +46,23 @@ function resolve(p = ".") {
 
 function resolveForCreate(p) {
   return assertInsideWorkspace(path.resolve(process.cwd(), p));
+}
+
+function resolveForProjectCreate(p) {
+  if (!p || String(p).trim() === "") throw new Error("path is required");
+  const raw = String(p);
+  const full = path.isAbsolute(raw)
+    ? path.resolve(raw)
+    : path.resolve(PROJECTS_ROOT, raw);
+  return assertInsideWorkspaceOrProjects(full);
+}
+
+function resolveExistingFile(p) {
+  const full = resolve(p);
+  if (fs.existsSync(full)) return full;
+  const projectFull = resolveForProjectCreate(p);
+  if (fs.existsSync(projectFull)) return projectFull;
+  return full;
 }
 
 function commandRisk(command) {
@@ -584,11 +609,11 @@ export const impl = {
   },
 
   write_file({ path: p, content }) {
-    const full = resolveForCreate(p);
+    const full = resolveForProjectCreate(p);
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, content);
     const lines = content.split("\n").length;
-    return `Wrote ${content.length} bytes (${lines} lines) to ${p}`;
+    return `Wrote ${content.length} bytes (${lines} lines) to ${path.relative(process.cwd(), full)}`;
   },
 
   edit_file({ path: p, old_string, new_string }) {
@@ -876,13 +901,13 @@ export const impl = {
   },
 
   create_markdown_report({ filename, title, content }) {
-    const full = resolveForCreate(filename);
+    const full = resolveForProjectCreate(filename);
     const markdown = `# ${title}
 
 ${content}`;
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, markdown, 'utf8');
-    return `Created markdown report ${filename} with title "${title}"`;
+    return `Created markdown report ${path.relative(process.cwd(), full)} with title "${title}"`;
   },
 };
 
@@ -961,27 +986,27 @@ function applyPatchText(patch) {
     const header = lines[i++];
     if (header.startsWith("*** Add File: ")) {
       const rel = header.slice("*** Add File: ".length).trim();
-      const full = resolveForCreate(rel);
+      const full = resolveForProjectCreate(rel);
       const { body, i: next } = collectPatchBody(lines, i);
       i = next;
       if (fs.existsSync(full)) throw new Error(`File already exists: ${rel}`);
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, body.map((line) => stripPatchLine(line, "+")).join("\n") + "\n");
-      changed.push(`added ${rel}`);
+      changed.push(`added ${path.relative(process.cwd(), full)}`);
     } else if (header.startsWith("*** Update File: ")) {
       const rel = header.slice("*** Update File: ".length).trim();
-      const full = resolve(rel);
+      const full = resolveExistingFile(rel);
       if (!fs.existsSync(full)) throw new Error(`File not found: ${rel}`);
       const { body, i: next } = collectPatchBody(lines, i);
       i = next;
       applyUpdatePatch(full, body);
-      changed.push(`updated ${rel}`);
+      changed.push(`updated ${path.relative(process.cwd(), full)}`);
     } else if (header.startsWith("*** Delete File: ")) {
       const rel = header.slice("*** Delete File: ".length).trim();
-      const full = resolve(rel);
+      const full = resolveExistingFile(rel);
       if (!fs.existsSync(full)) throw new Error(`File not found: ${rel}`);
       fs.unlinkSync(full);
-      changed.push(`deleted ${rel}`);
+      changed.push(`deleted ${path.relative(process.cwd(), full)}`);
     } else if (!header.trim()) {
       continue;
     } else {

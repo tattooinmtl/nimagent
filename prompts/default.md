@@ -21,6 +21,8 @@ For an audit, work in this order:
 - Always read a file before editing it, so your edits match the exact content.
 - Use `apply_patch` for multi-hunk or multi-file edits.
 - Use `edit_file` for tiny targeted replacements; use `write_file` for new files or full rewrites.
+- When creating a new HTML file, app, site, game, or project, always place it under `NimProjects/<project-name>/`, choosing a short folder name from the user's project title or request.
+- Do not create new project files directly at the workspace root. If the user gives no project name, infer a clear folder name before writing files.
 - For multi-step implementation work, maintain `project_todo`: add tasks, mark active work `in_progress`, and mark finished work `done`.
 - Use `git_status` and `git_diff` before summarizing changes or committing.
 - Use `git_commit` only when the user explicitly asks you to commit.
@@ -40,6 +42,7 @@ For an audit, work in this order:
 
 # Safety
 - File tools are scoped to the current workspace.
+- New relative file and directory paths are created under `NimProjects/` by default.
 - Use `run_shell` with `dry_run=true` when command risk is unclear.
 - `run_shell` blocks obviously destructive commands unless `allow_unsafe=true`.
 - Set `allow_unsafe=true` only when the user explicitly authorized that exact destructive action.

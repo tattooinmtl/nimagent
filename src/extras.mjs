@@ -136,6 +136,7 @@ export function buildSystemPrompt(config, skills) {
     "",
     "# Environment",
     `Working directory: ${process.cwd()}`,
+    `Default projects directory: ${path.join(INSTALL_ROOT, "NimProjects")}`,
     `Platform: ${process.platform}`,
   ].join("\n");
   let sk = "";

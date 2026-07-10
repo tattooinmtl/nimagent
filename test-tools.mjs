@@ -129,6 +129,10 @@ const tmp = fs.mkdtempSync(path.join(originalCwd, ".tmp-tools-"));
 try {
   process.chdir(tmp);
 
+  const samplePath = path.join(originalCwd, "NimProjects", "sample.txt");
+  const sampleDisplay = path.relative(process.cwd(), samplePath);
+  fs.rmSync(samplePath, { force: true });
+
   await assert("apply_patch adds a file",
     await runTool("apply_patch", {
       patch: [
@@ -141,7 +145,7 @@ try {
         "*** End Patch",
       ].join("\n"),
     }),
-    r => r.includes("added sample.txt") && fs.existsSync("sample.txt")
+    r => r.includes(sampleDisplay) && fs.existsSync(samplePath)
   );
 
   await assert("apply_patch updates multiple hunks",
@@ -158,7 +162,7 @@ try {
         "*** End Patch",
       ].join("\n"),
     }),
-    r => r.includes("updated sample.txt") && fs.readFileSync("sample.txt", "utf8").includes("ONE")
+    r => r.includes(sampleDisplay) && fs.readFileSync(samplePath, "utf8").includes("ONE")
   );
 
   await assert("workspace guard blocks escaping paths",
@@ -182,6 +186,7 @@ try {
   );
 } finally {
   process.chdir(originalCwd);
+  fs.rmSync(path.join(originalCwd, "NimProjects", "sample.txt"), { force: true });
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 

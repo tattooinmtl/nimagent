@@ -65,7 +65,8 @@
     "local": {
       "baseUrl": "http://localhost:8080/v1",
       "apiKey": "not-needed",
-      "reasoningParam": "none"
+      "reasoningParam": "none",
+      "nativeTools": false
     }
   },
 

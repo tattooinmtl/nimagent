@@ -4,12 +4,17 @@
   "theme": "themes/forge-yellow.json",
   "extensions": [
     "extensions/file-tools.js",
-    "extensions/web-search.js"
+    "extensions/web-search.js",
+    "extensions/threejs-tower-defense.js",
+    "extensions/threejs-3d-modeler.js"
   ],
   "skills": [
     "skills/code-review",
     "skills/project-doctor",
     "skills/html-game-builder",
+    "skills/threejs-tower-defense",
+    "skills/threejs-3d-modeler",
+    "skills/threejs-3d-model-editor",
     "skills/vs-project-starter"
   ],
   "autoDiscoverSkills": true,

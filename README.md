@@ -1,6 +1,6 @@
-# NimAgent V2
+# NimAgent GM
 
-*Vice Summer Edition 2026*
+*Game Maker Edition 2026*
 
 A from-scratch terminal coding agent in the style of `pi` / the Claude CLI.
 Talks to **OpenAI-compatible** providers (NVIDIA NIM, local llama.cpp, Ollama,
@@ -8,13 +8,13 @@ OpenRouter, …), runs a **tool-calling agent loop**, and logs every session as
 JSONL — all with zero npm dependencies (pure Node ≥ 20 + built-in `fetch`).
 
 ```
-███╗   ██╗██╗███╗   ███╗      █████╗  ██████╗ ███████╗███╗   ██╗████████╗   ██╗   ██╗██████╗
-████╗  ██║██║████╗ ████║     ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝   ██║   ██║╚════██╗
-██╔██╗ ██║██║██╔████╔██║████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║      ██║   ██║ █████╔╝
-██║╚██╗██║██║██║╚██╔╝██║╚═══╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║      ╚██╗ ██╔╝██╔═══╝
-██║ ╚████║██║██║ ╚═╝ ██║     ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║       ╚████╔╝ ███████╗
-╚═╝  ╚═══╝╚═╝╚═╝     ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝        ╚═══╝  ╚══════╝
-                                                      v i c e   s u m m e r   e d i t i o n   2 0 2 6
+███╗   ██╗██╗███╗   ███╗      █████╗  ██████╗ ███████╗███╗   ██╗████████╗    ██████╗ ███╗   ███╗
+████╗  ██║██║████╗ ████║     ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝   ██╔════╝ ████╗ ████║
+██╔██╗ ██║██║██╔████╔██║████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║      ██║  ███╗██╔████╔██║
+██║╚██╗██║██║██║╚██╔╝██║╚═══╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║      ██║   ██║██║╚██╔╝██║
+██║ ╚████║██║██║ ╚═╝ ██║     ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║      ╚██████╔╝██║ ╚═╝ ██║
+╚═╝  ╚═══╝╚═╝╚═╝     ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝       ╚═════╝ ╚═╝     ╚═╝
+                                                      G a m e   M a k e r   E d i t i o n   2 0 2 6
 ```
 
 ## Setup
@@ -46,6 +46,24 @@ NimAgent "fix the bug in app.js"  # one-shot mode
 NimAgent --model local/coder      # pick a model
 NimAgent --resume                 # resume last session
 ```
+
+### Game Maker edition
+
+New game projects default to `NimProjects/<project-name>/` inside the NimAgent
+install folder. When you ask for a new HTML game, Three.js project, model set,
+or tower-defense prototype, NimAgent creates a named project folder instead of
+dropping files at the repo root.
+
+Game Maker commands:
+- `/game <idea>` — build a small self-contained HTML5 canvas game.
+- `/td3d <idea>` — plan and build a Three.js tower-defense project with waves,
+  towers, enemies, bosses, style presets, and model-set guidance.
+- `/model3d <request>` — create reusable procedural Three.js model modules.
+- `/3d-edit <model name>` — isolate one generated Three.js model and tweak its
+  colors, parts, transforms, scale, or metadata.
+
+Game Maker styles include `pixel`, `fantasy`, `techno`, `medieval`, `scifi`,
+`horror`, `toy`, and `lowpoly`.
 
 ### REPL commands
 - `/help` — list commands
@@ -89,6 +107,12 @@ Via bundled extensions: `move_file`, `copy_file`, `delete_path`, `make_dir`
 caption tracks — no API key, no external AI service; the agent "watches" a
 video by reading its transcript and summarizing it. YouTube URLs passed to
 `web_fetch` route here automatically).
+
+Game Maker extensions add `threejs_tower_defense_guide`,
+`threejs_model_guide`, `create_threejs_model_module`,
+`inspect_threejs_model_module`, and `edit_threejs_model_module`. These tools
+help the agent generate tower-defense plans, procedural Three.js model files,
+and focused model edits under `NimProjects/<project-name>/`.
 
 Persistent memory: `memory_save`, `memory_search`, `memory_list`,
 `memory_forget` — durable facts stored in `<home>/memory.jsonl` that survive
@@ -175,6 +199,7 @@ All are MIT/Apache/permissively licensed; install the builds for your platform.
 ```
 .NimAgent/
   bin/nimagent.mjs     entry / REPL
+  NimProjects/         generated games, apps, Three.js projects, and models
   src/agent.mjs        tool-calling loop + system prompt
   src/toolcalls.mjs    tolerant text-protocol tool-call parser + recovery
   src/provider.mjs     OpenAI-compatible client
